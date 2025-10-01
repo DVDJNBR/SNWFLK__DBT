@@ -1,9 +1,6 @@
-
-
 from dotenv import load_dotenv
 import os
 import snowflake.connector
-from pathlib import Path
 
 # Charger les variables d'environnement
 load_dotenv()
