@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: daily_summary
+    description: "Résumé quotidien des trajets NYC Taxi"
+    columns:
+      - name: pickup_date
+        description: "Date de prise en charge"
+        tests:
+          - not_null
+          - unique
+      - name: total_trips
+        description: "Nombre total de trajets"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+  - name: zone_analysis
+    description: "Analyse par zone de prise en charge"
+    columns:
+      - name: pickup_zone
+        description: "ID de la zone de prise en charge"
+        tests:
+          - not_null
+          - unique
+      - name: popularity_rank
+        description: "Rang de popularité de la zone"
+
+  - name: hourly_patterns
+    description: "Patterns de demande par heure"
+    columns:
+      - name: pickup_hour
+        description: "Heure de prise en charge (0-23)"
+        tests:
+          - not_null
+          - unique
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 23

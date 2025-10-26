@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: stg_yellow_taxi_trips
+    description: "Données de trajets nettoyées et enrichies"
+    columns:
+      - name: trip_duration_minutes
+        description: "Durée du trajet en minutes"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1440  # 24 heures max
+      
+      - name: avg_speed_mph
+        description: "Vitesse moyenne en miles par heure"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100  # Vitesse raisonnable max
+      
+      - name: tip_percentage
+        description: "Pourcentage de pourboire"
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100

@@ -1,0 +1,29 @@
+version: 2
+
+sources:
+  - name: raw
+    description: "Données brutes NYC Taxi chargées depuis les fichiers Parquet"
+    database: NYC_TAXI_DB
+    schema: RAW
+    tables:
+      - name: yellow_taxi_trips
+        description: "Table des trajets de taxis jaunes NYC (2024-2025)"
+        columns:
+          - name: vendorid
+            description: "Identifiant du fournisseur"
+          - name: tpep_pickup_datetime
+            description: "Date et heure de prise en charge"
+          - name: tpep_dropoff_datetime
+            description: "Date et heure de dépose"
+          - name: passenger_count
+            description: "Nombre de passagers"
+          - name: trip_distance
+            description: "Distance du trajet en miles"
+          - name: pulocationid
+            description: "Zone de prise en charge"
+          - name: dolocationid
+            description: "Zone de dépose"
+          - name: fare_amount
+            description: "Montant du tarif"
+          - name: total_amount
+            description: "Montant total payé"
