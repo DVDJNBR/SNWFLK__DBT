@@ -8,23 +8,23 @@ models:
         description: "Durée du trajet en minutes"
         tests:
           - not_null
-          - dbt_utils.accepted_range:
-              arguments:
-                min_value: 0
-                max_value: 1440  # 24 heures max
+          - name: dbt_utils.accepted_range
+            arguments:
+              min_value: 0
+              max_value: 1440  # 24 heures max
       
       - name: avg_speed_mph
         description: "Vitesse moyenne en miles par heure"
         tests:
-          - dbt_utils.accepted_range:
-              arguments:
-                min_value: 0
-                max_value: 100  # Vitesse raisonnable max
+          - name: dbt_utils.accepted_range
+            arguments:
+              min_value: 0
+              max_value: 100  # Vitesse raisonnable max
       
       - name: tip_percentage
         description: "Pourcentage de pourboire"
         tests:
-          - dbt_utils.accepted_range:
-              arguments:
-                min_value: 0
-                max_value: 100
+          - name: dbt_utils.accepted_range
+            arguments:
+              min_value: 0
+              max_value: 100
