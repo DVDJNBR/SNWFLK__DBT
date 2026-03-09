@@ -14,7 +14,8 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
+              arguments:
+                min_value: 0
 
   - name: zone_analysis
     description: "Analyse par zone de prise en charge"
@@ -36,5 +37,6 @@ models:
           - not_null
           - unique
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 23
+              arguments:
+                min_value: 0
+                max_value: 23
