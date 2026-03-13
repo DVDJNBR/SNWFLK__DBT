@@ -1,284 +1,610 @@
 """
-🚕 NYC Taxi Dashboard Streamlit
-Dashboard interactif pour l'analyse des données NYC Taxi
+NYC Yellow Taxi — Dashboard analytique
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import snowflake.connector
 from dotenv import load_dotenv
 import os
-from datetime import datetime, date
 
-# Configuration de la page
 st.set_page_config(
-    page_title="🚕 NYC Taxi Dashboard",
-    page_icon="🚕",
+    page_title="NYC Yellow Taxi",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Chargement des variables d'environnement
 load_dotenv()
 
-@st.cache_data
-def get_snowflake_connection():
-    """Connexion Snowflake avec cache"""
+# ---------------------------------------------------------------------------
+# Palette jour/nuit : 5 ancres  bleu nuit → bleu moyen → bleu ciel → bleu moyen → bleu nuit
+#   nuit  = #1E3A8A  (h0, h23)
+#   moyen = #3B82F6  (h6, h18)
+#   ciel  = #7DD3FC  (h12)
+# ---------------------------------------------------------------------------
+HOUR_COLORS = [
+    "#1E3A8A",  # 0h  — nuit
+    "#23469C",  # 1h
+    "#2852AE",  # 2h
+    "#2D5EC0",  # 3h
+    "#316AD2",  # 4h
+    "#3676E4",  # 5h
+    "#3B82F6",  # 6h  — moyen
+    "#468FF7",  # 7h
+    "#519DF8",  # 8h
+    "#5CAAF9",  # 9h
+    "#67B8FA",  # 10h
+    "#72C6FB",  # 11h
+    "#7DD3FC",  # 12h — ciel
+    "#72C6FB",  # 13h
+    "#67B8FA",  # 14h
+    "#5CAAF9",  # 15h
+    "#519DF8",  # 16h
+    "#468FF7",  # 17h
+    "#3B82F6",  # 18h — moyen
+    "#3574E0",  # 19h
+    "#2F65CB",  # 20h
+    "#2957B5",  # 21h
+    "#2448A0",  # 22h
+    "#1E3A8A",  # 23h — nuit
+]
+
+# ---------------------------------------------------------------------------
+# Lookup officiel TLC : location_id -> nom de quartier
+# ---------------------------------------------------------------------------
+ZONE_LOOKUP = {
+    1: "Newark Airport", 2: "Jamaica Bay", 3: "Allerton/Pelham Gardens",
+    4: "Alphabet City", 5: "Arden Heights", 6: "Arrochar/Fort Wadsworth",
+    7: "Astoria", 8: "Astoria Park", 9: "Auburndale", 10: "Baisley Park",
+    11: "Bath Beach", 12: "Battery Park", 13: "Battery Park City",
+    14: "Bay Ridge", 15: "Bay Terrace/Fort Totten", 16: "Bayside",
+    17: "Bedford", 18: "Bedford Park", 19: "Bellerose", 20: "Belmont",
+    21: "Bensonhurst East", 22: "Bensonhurst West",
+    23: "Bloomfield/Emerson Hill", 24: "Bloomingdale", 25: "Boerum Hill",
+    26: "Borough Park", 27: "Breezy Point/Riis Beach", 28: "Briarwood",
+    29: "Brighton Beach", 30: "Broad Channel", 31: "Bronx Park",
+    32: "Bronxdale", 33: "Brooklyn Heights", 34: "Brooklyn Navy Yard",
+    35: "Brownsville", 36: "Bushwick North", 37: "Bushwick South",
+    38: "Cambria Heights", 39: "Canarsie", 40: "Carroll Gardens",
+    41: "Central Harlem", 42: "Central Harlem North", 43: "Central Park",
+    44: "Charleston/Tottenville", 45: "Chinatown", 46: "City Island",
+    47: "Clason Point", 48: "Clinton East", 49: "Clinton Hill",
+    50: "Clinton West", 51: "Co-Op City", 52: "College Point",
+    53: "Columbia St", 54: "Coney Island", 55: "Corona",
+    56: "Country Club", 57: "Crotona Park", 58: "Crotona Park East",
+    59: "Crown Heights North", 60: "Crown Heights South",
+    61: "Cypress Hills", 62: "Douglaston",
+    63: "Downtown Brooklyn/MetroTech", 64: "DUMBO/Vinegar Hill",
+    65: "Dyker Heights", 66: "East Chelsea", 67: "East Concourse",
+    68: "East Chelsea", 69: "East Elmhurst", 70: "East Flatbush/Farragut",
+    71: "East Flatbush/Remsen Village", 72: "East Flushing",
+    73: "East Harlem North", 74: "East Harlem South", 75: "East New York",
+    76: "East New York/Penn Ave", 77: "East Tremont", 78: "East Village",
+    79: "East Village", 80: "Eastchester", 81: "Elmhurst",
+    82: "Elmhurst/Maspeth", 83: "Eltingville/Annadale",
+    84: "Erasmus", 85: "Far Rockaway",
+    86: "Financial District North", 87: "Financial District South",
+    88: "Flatbush/Ditmas Park", 89: "Flatiron", 90: "Flatlands",
+    91: "Flushing", 92: "Flushing Meadows-Corona Park",
+    93: "Fordham South", 94: "Forest Hills", 95: "Forest Park",
+    96: "Fort Greene", 97: "Fresh Meadows", 98: "Freshkills Park",
+    99: "Garment District", 100: "Glen Oaks", 101: "Glendale",
+    102: "Governor's Island", 103: "Gowanus", 104: "Gramercy",
+    105: "Gravesend", 106: "Great Kills", 107: "Gramercy",
+    108: "Green-Wood Cemetery", 109: "Greenpoint",
+    110: "Greenwich Village North", 111: "Greenwich Village South",
+    112: "Gowanus/Fort Greene", 113: "Hamilton Heights",
+    114: "Hammels/Arverne", 115: "Heartland Village/Todt Hill",
+    116: "Highbridge", 117: "Highbridge Park", 118: "Hillcrest/Pomonok",
+    119: "Hollis", 120: "Homecrest", 121: "Howard Beach",
+    122: "Hudson Sq", 123: "Hunts Point", 124: "Inwood",
+    125: "Inwood Hill Park", 126: "Jackson Heights", 127: "Jamaica",
+    128: "Jamaica Estates", 129: "JFK Airport", 130: "Kensington",
+    131: "Kew Gardens", 132: "JFK Airport", 133: "Kew Gardens Hills",
+    134: "Kingsbridge Heights", 135: "Kingsbridge/Marble Hill",
+    136: "Kips Bay", 137: "LaGuardia Airport", 138: "LaGuardia Airport",
+    139: "Laurelton", 140: "Lenox Hill East", 141: "Lenox Hill West",
+    142: "Lincoln Square East", 143: "Lincoln Square West",
+    144: "Little Italy/NoLiTa", 145: "Long Island City/Hunters Point",
+    146: "Long Island City/Queens Plaza", 147: "Longwood",
+    148: "Lower East Side", 149: "Madison", 150: "Manhattan Beach",
+    151: "Manhattan Valley", 152: "Manhattanville",
+    153: "Marble Hill", 154: "Marine Park/Floyd Bennett Field",
+    155: "Marine Park/Mill Basin", 156: "Maspeth",
+    157: "Meatpacking/West Village West", 158: "Melrose South",
+    159: "Middle Village", 160: "Midtown Center", 161: "Midtown Center",
+    162: "Midtown East", 163: "Midtown North", 164: "Midtown South",
+    165: "Midwood", 166: "Morningside Heights",
+    167: "Morrisania/Melrose", 168: "Mott Haven/Port Morris",
+    169: "Mount Hope", 170: "Murray Hill", 171: "Murray Hill-Queens",
+    172: "New Dorp/Midland Beach", 173: "Newark Airport",
+    174: "North Corona", 175: "Norwood", 176: "Oakland Gardens",
+    177: "Oakwood", 178: "Ocean Hill", 179: "Ocean Parkway South",
+    180: "Old Astoria", 181: "Ozone Park", 182: "Park Slope",
+    183: "Parkchester", 184: "Pelham Bay", 185: "Pelham Bay Park",
+    186: "Penn Station/Madison Sq West", 187: "Pelham Pkwy",
+    188: "Prospect-Lefferts Gardens", 189: "Prospect Heights",
+    190: "Prospect Park", 191: "Queens Village",
+    192: "Queensboro Hill", 193: "Queensbridge/Ravenswood",
+    194: "Randalls Island", 195: "Red Hook", 196: "Rego Park",
+    197: "Richmond Hill", 198: "Ridgewood", 199: "Rikers Island",
+    200: "Riverdale/North Riverdale", 201: "Rockaway Park",
+    202: "Rosedale", 203: "Rossville/Woodrow", 204: "Saint Albans",
+    205: "Saint George/New Brighton",
+    206: "Saint Michaels Cemetery/Woodside",
+    207: "Schuylerville/Edgewater Park", 208: "Seaport",
+    209: "Sheepshead Bay", 210: "SoHo", 211: "Soundview/Bruckner",
+    212: "Soundview/Castle Hill", 213: "South Beach/Dongan Hills",
+    214: "South Jamaica", 215: "South Ozone Park",
+    216: "South Williamsburg", 217: "Springfield Gardens North",
+    218: "Springfield Gardens South",
+    219: "Spuyten Duyvil/Kingsbridge", 220: "Stapleton",
+    221: "Starrett City", 222: "Steinway",
+    223: "Stuyvesant Heights",
+    224: "Stuyvesant Town/Peter Cooper Village",
+    225: "Sunnyside", 226: "Sunset Park East", 227: "Sunset Park West",
+    228: "Sutton Place/Turtle Bay North", 229: "Midwood",
+    230: "Times Sq/Theatre District", 231: "TriBeCa/Civic Center",
+    232: "Two Bridges/Seward Park", 233: "UN/Turtle Bay South",
+    234: "Union Sq", 235: "University Heights/Morris Heights",
+    236: "Upper East Side North", 237: "Upper East Side South",
+    238: "Upper West Side North", 239: "Upper West Side South",
+    240: "Van Cortlandt Park", 241: "Van Cortlandt Village",
+    242: "Van Nest/Morris Park", 243: "Washington Heights North",
+    244: "Washington Heights South", 245: "West Brighton",
+    246: "West Concourse", 247: "West Farms/Bronx River",
+    248: "West Village", 249: "West Village",
+    250: "Westchester Village/Unionport", 251: "Westerleigh",
+    252: "Whitestone", 253: "Willets Point",
+    254: "Williamsbridge/Olinville", 255: "Williamsburg North",
+    256: "Williamsburg South", 257: "Windsor Terrace",
+    258: "Woodhaven", 259: "Woodlawn/Wakefield", 260: "Woodside",
+    261: "World Trade Center", 262: "Yorkville East",
+    263: "Yorkville West",
+}
+
+# ---------------------------------------------------------------------------
+# Connexion Snowflake
+# ---------------------------------------------------------------------------
+@st.cache_resource
+def get_connection():
     return snowflake.connector.connect(
         account=os.getenv("SNOWFLAKE_ACCOUNT"),
         user=os.getenv("SNOWFLAKE_USER"),
         password=os.getenv("SNOWFLAKE_PASSWORD"),
         warehouse="NYC_TAXI_WH",
         database="NYC_TAXI_DB",
-        schema="FINAL",  # Utiliser les tables FINAL créées par le script Python
-        role="NYCTRANSFORM"
+        schema="DBT_DBREAU",
+        role="ACCOUNTADMIN"
     )
 
-@st.cache_data(ttl=3600)  # Cache 1 heure
-def query_to_df(query):
-    """Exécuter une requête et retourner un DataFrame avec cache"""
-    conn = get_snowflake_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(query)
-        columns = [desc[0] for desc in cursor.description]
-        data = cursor.fetchall()
-        return pd.DataFrame(data, columns=columns)
-    finally:
-        conn.close()
+@st.cache_data(ttl=3600)
+def query(sql):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(sql)
+    cols = [d[0] for d in cur.description]
+    return pd.DataFrame(cur.fetchall(), columns=cols)
+
+# Correction du bug de chargement Parquet : microsecondes interprétées comme secondes
+_TS = ("DATEADD('second',"
+       " DATEDIFF('second', '1970-01-01'::TIMESTAMP_NTZ, {col}) / 1000000,"
+       " '1970-01-01'::TIMESTAMP_NTZ)")
+
+_DATE_FILTER = (
+    f"AND {_TS.format(col='TPEP_PICKUP_DATETIME')}::DATE >= '2023-01-01' "
+    f"AND {_TS.format(col='TPEP_PICKUP_DATETIME')}::DATE <  '2025-11-01'"
+)
 
 @st.cache_data(ttl=3600)
 def load_data():
-    """Charger toutes les données nécessaires"""
-    
-    # Données quotidiennes
-    daily_data = query_to_df("""
-        SELECT pickup_date, total_trips, total_revenue, avg_distance, avg_tip_percentage
-        FROM daily_summary 
-        ORDER BY pickup_date
+    pickup_date = _TS.format(col="TPEP_PICKUP_DATETIME")
+    dropoff_ts  = _TS.format(col="TPEP_DROPOFF_DATETIME")
+    pickup_hour = f"HOUR({pickup_date})"
+
+    daily = query(f"""
+        SELECT
+            {pickup_date}::DATE                              AS pickup_date,
+            COUNT(*)                                         AS total_trips,
+            SUM(TOTAL_AMOUNT)                                AS total_revenue,
+            AVG(TRIP_DISTANCE)                               AS avg_distance,
+            AVG(TOTAL_AMOUNT)                                AS avg_fare,
+            AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100)  AS avg_tip_pct
+        FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
+        WHERE TRIP_DISTANCE > 0 AND TOTAL_AMOUNT > 0
+          {_DATE_FILTER}
+        GROUP BY 1
+        ORDER BY 1
     """)
-    
-    # Données horaires
-    hourly_data = query_to_df("""
-        SELECT pickup_hour, total_trips, avg_revenue, avg_speed, time_period
-        FROM hourly_patterns 
-        ORDER BY pickup_hour
+
+    hourly = query(f"""
+        SELECT
+            {pickup_hour}  AS pickup_hour,
+            COUNT(*)          AS total_trips,
+            SUM(TOTAL_AMOUNT) AS total_revenue,
+            AVG(TOTAL_AMOUNT) AS avg_fare,
+            CASE
+                WHEN {pickup_hour} BETWEEN 0  AND 5  THEN 'Nuit (0h-6h)'
+                WHEN {pickup_hour} BETWEEN 6  AND 9  THEN 'Matin (6h-10h)'
+                WHEN {pickup_hour} BETWEEN 10 AND 16 THEN 'Journée (10h-17h)'
+                WHEN {pickup_hour} BETWEEN 17 AND 20 THEN 'Soir (17h-21h)'
+                ELSE                                       'Soirée (21h-0h)'
+            END             AS tranche
+        FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
+        WHERE TRIP_DISTANCE > 0
+          {_DATE_FILTER}
+        GROUP BY 1, 5
+        ORDER BY 1
     """)
-    
-    # Top zones
-    zone_data = query_to_df("""
-        SELECT pickup_zone, total_trips, total_revenue, avg_distance, popularity_rank
-        FROM zone_analysis 
-        ORDER BY total_trips DESC 
+
+    zones = query(f"""
+        SELECT
+            PULOCATIONID                             AS zone_id,
+            COUNT(*)                                 AS total_trips,
+            SUM(TOTAL_AMOUNT)                        AS total_revenue,
+            AVG(TOTAL_AMOUNT)                        AS avg_fare,
+            AVG(TRIP_DISTANCE)                       AS avg_distance
+        FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
+        WHERE TRIP_DISTANCE > 0
+          {_DATE_FILTER}
+        GROUP BY 1
+        ORDER BY total_trips DESC
         LIMIT 50
     """)
-    
-    return daily_data, hourly_data, zone_data
 
-# Interface utilisateur
+    profile = query(f"""
+        SELECT
+            COUNT(*)                                                     AS total_trips,
+            AVG(TRIP_DISTANCE)                                           AS avg_distance,
+            AVG(TOTAL_AMOUNT)                                            AS avg_fare,
+            AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100)              AS avg_tip_pct,
+            SUM(CASE WHEN TIP_AMOUNT > 0 THEN 1 ELSE 0 END) * 100.0
+                / COUNT(*)                                               AS pct_avec_pourboire,
+            SUM(CASE WHEN PAYMENT_TYPE = 1 THEN 1 ELSE 0 END) * 100.0
+                / COUNT(*)                                               AS pct_carte,
+            SUM(CASE WHEN PULOCATIONID IN (132, 138)
+                       OR DOLOCATIONID IN (132, 138) THEN 1 ELSE 0 END)
+                * 100.0 / COUNT(*)                                       AS pct_aeroport_jfk,
+            SUM(CASE WHEN PULOCATIONID = 137
+                       OR DOLOCATIONID = 137 THEN 1 ELSE 0 END)
+                * 100.0 / COUNT(*)                                       AS pct_aeroport_lga,
+            AVG(PASSENGER_COUNT)                                         AS avg_passagers
+        FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
+        WHERE TRIP_DISTANCE > 0 AND TOTAL_AMOUNT > 0
+          {_DATE_FILTER}
+    """)
+
+    return daily, hourly, zones, profile
+
+
+# ---------------------------------------------------------------------------
+# Interface
+# ---------------------------------------------------------------------------
 def main():
-    # Titre principal
-    st.title("🚕 NYC Taxi Dashboard")
-    st.markdown("**Analyse interactive des données NYC Taxi (2024-2025)**")
-    
-    # Chargement des données
-    with st.spinner("📊 Chargement des données..."):
+    st.title("NYC Yellow Taxi")
+
+    with st.spinner("Chargement des données..."):
         try:
-            daily_data, hourly_data, zone_data = load_data()
-            
-            # Conversion des dates
-            daily_data['PICKUP_DATE'] = pd.to_datetime(daily_data['PICKUP_DATE'])
-            
+            daily, hourly, zones, profile = load_data()
+            daily["PICKUP_DATE"] = pd.to_datetime(daily["PICKUP_DATE"], errors="coerce")
+            daily = daily.dropna(subset=["PICKUP_DATE"])
+            # Filtre défensif : on coupe à fin oct. 2025 même si le cache est ancien
+            daily = daily[daily["PICKUP_DATE"] <= pd.Timestamp("2025-10-31")]
+            if daily.empty:
+                st.warning("Aucune donnée valide dans daily_summary.")
+                st.stop()
         except Exception as e:
-            st.error(f"❌ Erreur de connexion: {e}")
-            st.info("💡 Vérifiez que le pipeline a été exécuté et que les tables FINAL existent")
+            st.error(f"Erreur de chargement : {e}")
             st.stop()
-    
-    # Sidebar avec contrôles
-    st.sidebar.header("🎛️ Contrôles")
-    
-    # Filtre de dates
-    min_date = daily_data['PICKUP_DATE'].min().date()
-    max_date = daily_data['PICKUP_DATE'].max().date()
-    
-    date_range = st.sidebar.date_input(
-        "📅 Période d'analyse",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
+
+    total_trips = daily["TOTAL_TRIPS"].sum()
+    date_min    = daily["PICKUP_DATE"].min().strftime("%b %Y")
+    date_max    = daily["PICKUP_DATE"].max().strftime("%b %Y")
+    n_days      = len(daily)
+    st.caption(
+        f"{total_trips/1e6:.1f}M courses analysées · "
+        f"{n_days} jours de données · "
+        f"{date_min} – {date_max} · "
+        f"Source : NYC Taxi & Limousine Commission (TLC)"
     )
-    
-    # Filtre des zones
-    top_zones = st.sidebar.slider("🏆 Nombre de zones à afficher", 5, 20, 10)
-    
-    # Métrique à analyser
-    metric = st.sidebar.selectbox(
-        "📊 Métrique principale",
-        ["TOTAL_TRIPS", "TOTAL_REVENUE", "AVG_DISTANCE", "AVG_TIP_PERCENTAGE"],
+
+    top_n = 20
+    fd    = daily
+
+    # Composant carte réutilisé dans les KPIs et le portrait
+    def card(label, value, detail="", color="#2563EB"):
+        st.markdown(
+            f"""<div style="background:#F8FAFC; border-left:4px solid {color};
+                            border-radius:8px; padding:18px 20px;">
+                  <div style="font-size:2rem; font-weight:700; color:{color}; line-height:1.1;">{value}</div>
+                  <div style="font-size:0.82rem; font-weight:600; color:#334155; margin-top:6px;">{label}</div>
+                  <div style="font-size:0.75rem; color:#94A3B8; margin-top:3px;">{detail}</div>
+                </div>""",
+            unsafe_allow_html=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Section 1 : Indicateurs clés
+    # ------------------------------------------------------------------
+    st.header("Indicateurs clés")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        card("Courses", f"{fd['TOTAL_TRIPS'].sum():,.0f}",
+             "sur la période sélectionnée", "#2563EB")
+    with c2:
+        rev = fd["TOTAL_REVENUE"].sum()
+        card("Revenus totaux", f"${rev/1e6:.1f}M",
+             f"soit ${rev/fd['TOTAL_TRIPS'].sum():.2f} / course", "#2563EB")
+    with c3:
+        card("Distance moyenne", f"{fd['AVG_DISTANCE'].mean():.1f} mi",
+             "par trajet", "#059669")
+    with c4:
+        card("Tarif moyen", f"${fd['AVG_FARE'].mean():.2f}",
+             "toutes charges incluses", "#059669")
+    with c5:
+        card("Pourboire moyen", f"{fd['AVG_TIP_PCT'].mean():.1f}%",
+             "du tarif de base", "#7C3AED")
+
+    st.divider()
+
+    metric_choice = st.radio(
+        "Métrique",
+        ["TOTAL_TRIPS", "TOTAL_REVENUE", "AVG_FARE"],
+        horizontal=True,
         format_func=lambda x: {
-            "TOTAL_TRIPS": "Nombre de trajets",
-            "TOTAL_REVENUE": "Revenus totaux", 
-            "AVG_DISTANCE": "Distance moyenne",
-            "AVG_TIP_PERCENTAGE": "Pourboire moyen"
-        }[x]
+            "TOTAL_TRIPS": "Volume de courses",
+            "TOTAL_REVENUE": "Revenus totaux",
+            "AVG_FARE": "Tarif moyen",
+        }[x],
+        label_visibility="collapsed",
     )
-    
-    # Filtrer les données selon la période
-    if len(date_range) == 2:
-        start_date, end_date = date_range
-        filtered_daily = daily_data[
-            (daily_data['PICKUP_DATE'].dt.date >= start_date) & 
-            (daily_data['PICKUP_DATE'].dt.date <= end_date)
-        ]
-    else:
-        filtered_daily = daily_data
-    
-    # KPIs principaux
-    st.header("📊 KPIs Principaux")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    total_trips = filtered_daily['TOTAL_TRIPS'].sum()
-    total_revenue = filtered_daily['TOTAL_REVENUE'].sum()
-    avg_distance = filtered_daily['AVG_DISTANCE'].mean()
-    avg_tip = filtered_daily['AVG_TIP_PERCENTAGE'].mean()
-    
-    with col1:
-        st.metric("🚕 Total Trajets", f"{total_trips:,.0f}")
-    
-    with col2:
-        st.metric("💰 Revenus Totaux", f"${total_revenue:,.0f}")
-    
-    with col3:
-        st.metric("📏 Distance Moyenne", f"{avg_distance:.1f} miles")
-    
-    with col4:
-        st.metric("💡 Pourboire Moyen", f"{avg_tip:.1f}%")
-    
-    # Graphiques principaux
-    st.header("📈 Analyses Temporelles")
-    
+
+    metric_label = {
+        "TOTAL_TRIPS": "Nombre de courses",
+        "TOTAL_REVENUE": "Revenus ($)",
+        "AVG_FARE": "Tarif moyen ($)",
+    }[metric_choice]
+
+    # ------------------------------------------------------------------
+    # Section 2 : Profil hebdomadaire + répartition horaire
+    # ------------------------------------------------------------------
+    st.header("Patterns d'activité")
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
-        # Évolution temporelle
-        fig_time = px.line(
-            filtered_daily, 
-            x='PICKUP_DATE', 
-            y=metric,
-            title=f"Évolution - {metric}",
-            template="plotly_white"
+        fd_copy = fd.copy()
+        fd_copy["jour_semaine"] = fd_copy["PICKUP_DATE"].dt.day_name()
+        day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_fr    = ["Lun.", "Mar.", "Mer.", "Jeu.", "Ven.", "Sam.", "Dim."]
+
+        weekly = (
+            fd_copy.groupby("jour_semaine")[metric_choice]
+            .mean()
+            .reindex(day_order)
+            .reset_index()
         )
-        fig_time.update_layout(height=400)
-        st.plotly_chart(fig_time, use_container_width=True)
-    
+        weekly["jour_fr"] = day_fr
+        mean_val = weekly[metric_choice].mean()
+        weekly["color"] = weekly[metric_choice].apply(
+            lambda v: "#2563EB" if v >= mean_val else "#CBD5E1"
+        )
+        weekly["delta"] = ((weekly[metric_choice] - mean_val) / mean_val * 100).round(1)
+
+        fig_week = go.Figure()
+        fig_week.add_trace(go.Bar(
+            x=weekly["jour_fr"],
+            y=weekly[metric_choice],
+            marker_color=weekly["color"],
+            text=weekly["delta"].apply(lambda d: f"+{d}%" if d >= 0 else f"{d}%"),
+            textposition="outside",
+            hovertemplate="<b>%{x}</b><br>" + metric_label + " : %{y:,.0f}<extra></extra>",
+        ))
+        fig_week.add_hline(
+            y=mean_val,
+            line_dash="dot",
+            line_color="#94A3B8",
+            annotation_text="moy.",
+            annotation_position="right",
+            annotation_font_size=11,
+        )
+        y_min = weekly[metric_choice].min()
+        y_max = weekly[metric_choice].max()
+        fig_week.update_layout(
+            title=f"{metric_label} — profil hebdomadaire",
+            template="plotly_white",
+            height=380,
+            showlegend=False,
+            yaxis_range=[y_min * 0.96, y_max * 1.08],
+            yaxis_title=metric_label,
+            xaxis_title="",
+        )
+        st.plotly_chart(fig_week, use_container_width=True)
+
     with col2:
-        # Patterns horaires
-        colors = {
-            'Rush Matinal': '#ff7f0e', 
-            'Journée': '#2ca02c', 
-            'Rush Soir': '#d62728', 
-            'Soirée': '#9467bd', 
-            'Nuit': '#8c564b'
-        }
-        
-        fig_hourly = px.bar(
-            hourly_data,
-            x='PICKUP_HOUR',
-            y='TOTAL_TRIPS',
-            color='TIME_PERIOD',
-            color_discrete_map=colors,
-            title="Demande par Heure",
-            template="plotly_white"
+        hourly_sorted = hourly.sort_values("PICKUP_HOUR")
+        h_col   = metric_choice.lower()   # total_trips / total_revenue / avg_fare
+        h_max   = hourly_sorted[h_col.upper()].max()
+
+        fig_hourly = go.Figure()
+        for _, row in hourly_sorted.iterrows():
+            h = int(row["PICKUP_HOUR"])
+            fig_hourly.add_trace(go.Bar(
+                x=[h],
+                y=[row[h_col.upper()]],
+                marker_color=HOUR_COLORS[h],
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{h}h</b><br>"
+                    f"{metric_label} : %{{y:,.0f}}<br>"
+                    f"Tarif moy. : ${row['AVG_FARE']:.2f}"
+                    "<extra></extra>"
+                ),
+            ))
+
+        for h, label in [(0, "🌙"), (12, "☀️"), (23, "🌙")]:
+            fig_hourly.add_annotation(
+                x=h, y=h_max * 1.07,
+                text=label, showarrow=False,
+                font=dict(size=20),
+            )
+
+        fig_hourly.update_layout(
+            title=f"{metric_label} par heure",
+            xaxis=dict(title="Heure", tickmode="linear", tick0=0, dtick=1),
+            yaxis_title=metric_label,
+            template="plotly_white",
+            height=380,
+            bargap=0.08,
         )
-        fig_hourly.update_layout(height=400)
         st.plotly_chart(fig_hourly, use_container_width=True)
-    
-    # Analyses par zones
-    st.header("🗺️ Analyses Géographiques")
-    
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # Section 3 : Évolution temporelle (vue longue durée)
+    # ------------------------------------------------------------------
+    st.header("Évolution dans le temps")
+
+    fd_sorted = fd.sort_values("PICKUP_DATE")
+    fig_line = px.line(
+        fd_sorted,
+        x="PICKUP_DATE",
+        y=metric_choice,
+        labels={"PICKUP_DATE": "", metric_choice: metric_label},
+        title=f"{metric_label} — évolution quotidienne",
+        template="plotly_white",
+    )
+    fig_line.update_traces(line_color="#2563EB", line_width=1.5)
+    fig_line.update_xaxes(
+        range=[fd_sorted["PICKUP_DATE"].min(), fd_sorted["PICKUP_DATE"].max()]
+    )
+    fig_line.update_layout(height=340)
+    st.plotly_chart(fig_line, use_container_width=True)
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # Section 4 : Géographie
+    # ------------------------------------------------------------------
+    st.header("Quartiers")
+
+    zones["zone_name"] = zones["ZONE_ID"].map(ZONE_LOOKUP).fillna(zones["ZONE_ID"].astype(str))
+    top_zones = zones.head(top_n).copy()
+
+    # 10 barres visibles, glisser verticalement dans le graphique pour voir le reste
+    VISIBLE   = 10
+    chart_h   = VISIBLE * 42 + 80
+
+    SCALE_BLUE  = [[0.0, "#93C5FD"], [1.0, "#1E40AF"]]
+    SCALE_GREEN = [[0.0, "#86EFAC"], [1.0, "#14532D"]]
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
-        # Top zones
-        top_zone_data = zone_data.head(top_zones)
-        
+        tz_vol = top_zones.sort_values("TOTAL_TRIPS")
         fig_zones = px.bar(
-            top_zone_data,
-            x='TOTAL_TRIPS',
-            y=[f"Zone {zone}" for zone in top_zone_data['PICKUP_ZONE']],
-            orientation='h',
-            title=f"Top {top_zones} Zones les Plus Actives",
-            template="plotly_white"
+            tz_vol, x="TOTAL_TRIPS", y="zone_name", orientation="h",
+            color="TOTAL_TRIPS", color_continuous_scale=SCALE_BLUE,
+            labels={"TOTAL_TRIPS": "Nombre de courses", "zone_name": ""},
+            title="Volume de courses par quartier", template="plotly_white",
         )
-        fig_zones.update_layout(height=500)
+        fig_zones.update_coloraxes(showscale=False)
+        fig_zones.update_layout(height=chart_h, margin=dict(l=0))
         st.plotly_chart(fig_zones, use_container_width=True)
-    
+
     with col2:
-        # Revenus par zone (top 10)
-        top_revenue_zones = zone_data.nlargest(10, 'TOTAL_REVENUE')
-        
-        fig_revenue = px.pie(
-            top_revenue_zones,
-            values='TOTAL_REVENUE',
-            names=[f"Zone {zone}" for zone in top_revenue_zones['PICKUP_ZONE']],
-            title="Répartition des Revenus (Top 10)",
-            template="plotly_white"
+        tz_fare = top_zones.sort_values("AVG_FARE")
+        fig_fare = px.bar(
+            tz_fare, x="AVG_FARE", y="zone_name", orientation="h",
+            color="AVG_FARE", color_continuous_scale=SCALE_GREEN,
+            labels={"AVG_FARE": "Tarif moyen ($)", "zone_name": ""},
+            title="Tarif moyen par quartier", template="plotly_white",
         )
-        fig_revenue.update_layout(height=500)
-        st.plotly_chart(fig_revenue, use_container_width=True)
-    
-    # Tableau détaillé
-    st.header("📋 Données Détaillées")
-    
-    tab1, tab2, tab3 = st.tabs(["📅 Données Quotidiennes", "🏆 Top Zones", "⏰ Patterns Horaires"])
-    
-    with tab1:
-        st.dataframe(
-            filtered_daily.sort_values('PICKUP_DATE', ascending=False),
-            use_container_width=True,
-            hide_index=True
-        )
-    
-    with tab2:
-        st.dataframe(
-            zone_data.head(20),
-            use_container_width=True,
-            hide_index=True
-        )
-    
-    with tab3:
-        st.dataframe(
-            hourly_data,
-            use_container_width=True,
-            hide_index=True
-        )
-    
-    # Insights automatiques
-    st.header("🎯 Insights Clés")
-    
-    # Calculs d'insights
-    busiest_day = filtered_daily.loc[filtered_daily['TOTAL_TRIPS'].idxmax(), 'PICKUP_DATE'].strftime('%Y-%m-%d')
-    best_zone = zone_data.iloc[0]['PICKUP_ZONE']
-    peak_hour = hourly_data.loc[hourly_data['TOTAL_TRIPS'].idxmax(), 'PICKUP_HOUR']
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.info(f"📅 **Jour le plus actif**: {busiest_day}")
-    
-    with col2:
-        st.info(f"🏆 **Zone la plus populaire**: Zone {best_zone}")
-    
-    with col3:
-        st.info(f"⏰ **Heure de pointe**: {peak_hour}h")
-    
-    # Footer
+        fig_fare.update_coloraxes(showscale=False)
+        fig_fare.update_layout(height=chart_h, margin=dict(l=0))
+        st.plotly_chart(fig_fare, use_container_width=True)
+
+    st.caption(
+        "Le tarif moyen par quartier révèle la nature des trajets : "
+        "les aéroports (JFK, LaGuardia) affichent des tarifs élevés liés à la distance, "
+        "tandis que Midtown génère du volume sur des courses courtes."
+    )
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # Section 5 : Portrait type d'un trajet NYC
+    # ------------------------------------------------------------------
+    st.header("Portrait type d'un trajet à New York")
+
+    p = profile.iloc[0]
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        card("Distance moyenne", f"{p['AVG_DISTANCE']:.1f} mi",
+             "par course", "#2563EB")
+    with c2:
+        card("Tarif moyen", f"${p['AVG_FARE']:.2f}",
+             "toutes charges incluses", "#2563EB")
+    with c3:
+        card("Courses avec pourboire", f"{p['PCT_AVEC_POURBOIRE']:.0f}%",
+             f"pourboire moy. {p['AVG_TIP_PCT']:.1f}% du tarif", "#059669")
+    with c4:
+        card("Paiement par carte", f"{p['PCT_CARTE']:.0f}%",
+             f"{100 - p['PCT_CARTE']:.0f}% en espèces", "#059669")
+
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        card("Passagers / course", f"{p['AVG_PASSAGERS']:.1f}",
+             "en moyenne", "#7C3AED")
+    with c2:
+        card("Courses via JFK", f"{p['PCT_AEROPORT_JFK']:.1f}%",
+             "départ ou arrivée", "#7C3AED")
+    with c3:
+        card("Courses via LaGuardia", f"{p['PCT_AEROPORT_LGA']:.1f}%",
+             "départ ou arrivée", "#7C3AED")
+    with c4:
+        pct_city = 100 - p['PCT_AEROPORT_JFK'] - p['PCT_AEROPORT_LGA']
+        card("Courses intra-ville", f"{pct_city:.0f}%",
+             "sans aéroport", "#7C3AED")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Mini chart : répartition paiement
+    pay_data = pd.DataFrame({
+        "Mode": ["Carte bancaire", "Espèces", "Autre"],
+        "Part (%)": [p["PCT_CARTE"], 100 - p["PCT_CARTE"] - 3, 3],
+    })
+    fig_pay = px.bar(
+        pay_data,
+        x="Part (%)",
+        y="Mode",
+        orientation="h",
+        color="Mode",
+        color_discrete_sequence=["#2563EB", "#059669", "#94A3B8"],
+        template="plotly_white",
+        title="Répartition des modes de paiement",
+        text="Part (%)",
+    )
+    fig_pay.update_traces(texttemplate="%{text:.0f}%", textposition="inside")
+    fig_pay.update_layout(
+        height=180, showlegend=False,
+        xaxis=dict(range=[0, 100], title=""),
+        yaxis_title="",
+        margin=dict(l=0, t=40, b=10),
+    )
+    _, col_pay, _ = st.columns([0.25, 0.5, 0.25])
+    with col_pay:
+        st.plotly_chart(fig_pay, use_container_width=True)
+
     st.markdown("---")
-    st.markdown("**🚕 NYC Taxi Dashboard** - Données 2024-2025 | Powered by Streamlit + Snowflake")
+    st.caption("Source : NYC Taxi & Limousine Commission (TLC) — Yellow Taxi Trip Records")
+
 
 if __name__ == "__main__":
     main()
