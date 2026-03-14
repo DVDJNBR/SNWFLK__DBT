@@ -225,6 +225,8 @@ def load_data():
             COUNT(*)          AS total_trips,
             SUM(TOTAL_AMOUNT) AS total_revenue,
             AVG(TOTAL_AMOUNT) AS avg_fare,
+            AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100) AS avg_tip_pct,
+            AVG(TRIP_DISTANCE) AS avg_distance,
             CASE
                 WHEN {pickup_hour} BETWEEN 0  AND 5  THEN 'Nuit (0h-6h)'
                 WHEN {pickup_hour} BETWEEN 6  AND 9  THEN 'Matin (6h-10h)'
@@ -235,7 +237,7 @@ def load_data():
         FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
         WHERE TRIP_DISTANCE > 0
           {_DATE_FILTER}
-        GROUP BY 1, 5
+        GROUP BY 1, 7
         ORDER BY 1
     """)
 
@@ -245,13 +247,14 @@ def load_data():
             COUNT(*)                                 AS total_trips,
             SUM(TOTAL_AMOUNT)                        AS total_revenue,
             AVG(TOTAL_AMOUNT)                        AS avg_fare,
-            AVG(TRIP_DISTANCE)                       AS avg_distance
+            AVG(TRIP_DISTANCE)                       AS avg_distance,
+            AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100) AS avg_tip_pct
         FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
         WHERE TRIP_DISTANCE > 0
           {_DATE_FILTER}
         GROUP BY 1
         ORDER BY total_trips DESC
-        LIMIT 50
+        LIMIT 100
     """)
 
     profile = query(f"""
@@ -292,6 +295,9 @@ def main():
             daily = daily.dropna(subset=["PICKUP_DATE"])
             # Filtre défensif : on coupe à fin oct. 2025 même si le cache est ancien
             daily = daily[daily["PICKUP_DATE"] <= pd.Timestamp("2025-10-31")]
+            # Exclure les jours avec données incomplètes (< 30 % de la médiane)
+            _med = daily["TOTAL_TRIPS"].median()
+            daily = daily[daily["TOTAL_TRIPS"] >= _med * 0.30]
             if daily.empty:
                 st.warning("Aucune donnée valide dans daily_summary.")
                 st.stop()
@@ -310,7 +316,7 @@ def main():
         f"Source : NYC Taxi & Limousine Commission (TLC)"
     )
 
-    top_n = 20
+    top_n = 10
     fd    = daily
 
     # Composant carte réutilisé dans les KPIs et le portrait
@@ -349,28 +355,30 @@ def main():
 
     st.divider()
 
-    metric_choice = st.radio(
-        "Métrique",
-        ["TOTAL_TRIPS", "TOTAL_REVENUE", "AVG_FARE"],
-        horizontal=True,
-        format_func=lambda x: {
-            "TOTAL_TRIPS": "Volume de courses",
-            "TOTAL_REVENUE": "Revenus totaux",
-            "AVG_FARE": "Tarif moyen",
-        }[x],
-        label_visibility="collapsed",
-    )
-
-    metric_label = {
-        "TOTAL_TRIPS": "Nombre de courses",
-        "TOTAL_REVENUE": "Revenus ($)",
-        "AVG_FARE": "Tarif moyen ($)",
-    }[metric_choice]
-
     # ------------------------------------------------------------------
-    # Section 2 : Profil hebdomadaire + répartition horaire
+    # Section 2 : Patterns d'activité
     # ------------------------------------------------------------------
     st.header("Patterns d'activité")
+
+    METRIC_OPTIONS = ["TOTAL_TRIPS", "TOTAL_REVENUE", "AVG_FARE", "AVG_TIP_PCT", "AVG_DISTANCE"]
+    METRIC_LABELS  = {
+        "TOTAL_TRIPS":   "Nombre de courses",
+        "TOTAL_REVENUE": "Revenus ($)",
+        "AVG_FARE":      "Tarif moyen ($)",
+        "AVG_TIP_PCT":   "Pourboire moyen (%)",
+        "AVG_DISTANCE":  "Distance moyenne (mi)",
+    }
+    METRIC_NAMES = {
+        "TOTAL_TRIPS":   "Nb de courses",
+        "TOTAL_REVENUE": "Revenus ($)",
+        "AVG_FARE":      "Tarif moyen ($)",
+        "AVG_TIP_PCT":   "Pourboire (%)",
+        "AVG_DISTANCE":  "Distance (mi)",
+    }
+
+    # Valeur courante depuis session_state (persiste entre les reruns)
+    metric_choice = st.session_state.get("metric_pills", "TOTAL_TRIPS")
+    metric_label  = METRIC_LABELS[metric_choice]
 
     col1, col2 = st.columns(2)
 
@@ -438,8 +446,7 @@ def main():
                 showlegend=False,
                 hovertemplate=(
                     f"<b>{h}h</b><br>"
-                    f"{metric_label} : %{{y:,.0f}}<br>"
-                    f"Tarif moy. : ${row['AVG_FARE']:.2f}"
+                    f"{metric_label} : %{{y:,.1f}}"
                     "<extra></extra>"
                 ),
             ))
@@ -461,28 +468,163 @@ def main():
         )
         st.plotly_chart(fig_hourly, use_container_width=True)
 
-    st.divider()
-
-    # ------------------------------------------------------------------
-    # Section 3 : Évolution temporelle (vue longue durée)
-    # ------------------------------------------------------------------
-    st.header("Évolution dans le temps")
-
-    fd_sorted = fd.sort_values("PICKUP_DATE")
-    fig_line = px.line(
-        fd_sorted,
-        x="PICKUP_DATE",
-        y=metric_choice,
-        labels={"PICKUP_DATE": "", metric_choice: metric_label},
-        title=f"{metric_label} — évolution quotidienne",
-        template="plotly_white",
+    # Sélecteur de métrique — boutons natifs centrés entre les deux rangées
+    st.markdown(
+        "<p style='text-align:center; font-size:0.95rem; font-weight:600; "
+        "color:#1E40AF; margin:20px 0 8px;'>"
+        "Sélectionner la métrique à afficher sur les graphiques</p>",
+        unsafe_allow_html=True,
     )
-    fig_line.update_traces(line_color="#2563EB", line_width=1.5)
-    fig_line.update_xaxes(
-        range=[fd_sorted["PICKUP_DATE"].min(), fd_sorted["PICKUP_DATE"].max()]
-    )
-    fig_line.update_layout(height=340)
-    st.plotly_chart(fig_line, use_container_width=True)
+    _, btn_col, _ = st.columns([1, 5, 1])
+    with btn_col:
+        cols = st.columns(len(METRIC_OPTIONS))
+        for col, opt in zip(cols, METRIC_OPTIONS):
+            with col:
+                btn_type = "primary" if opt == metric_choice else "secondary"
+                if st.button(METRIC_NAMES[opt], key=f"m_{opt}",
+                             type=btn_type, use_container_width=True):
+                    st.session_state["metric_pills"] = opt
+                    st.rerun()
+    metric_choice = st.session_state.get("metric_pills", metric_choice)
+    metric_label  = METRIC_LABELS[metric_choice]
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+    # -- Évolution pleine largeur ------------------------------------------
+    fd_sorted = fd.sort_values("PICKUP_DATE").copy()
+    fd_sorted["MA7"] = fd_sorted[metric_choice].rolling(7, center=True, min_periods=1).mean()
+
+    date_global_min = fd_sorted["PICKUP_DATE"].min()
+    date_global_max = fd_sorted["PICKUP_DATE"].max()
+
+    PERIODS = {"1M": 1, "3M": 3, "6M": 6, "1A": 12, "Tout": 0}
+    if "evo_period" not in st.session_state:
+        st.session_state["evo_period"] = "6M"
+    if "evo_offset" not in st.session_state:
+        st.session_state["evo_offset"] = 0
+
+    cur_period = st.session_state["evo_period"]
+    cur_offset = st.session_state["evo_offset"]
+
+    if cur_period == "Tout":
+        x_min, x_max = date_global_min, date_global_max
+    else:
+        months = PERIODS[cur_period]
+        x_max = date_global_max - pd.DateOffset(months=cur_offset * months)
+        x_min = x_max - pd.DateOffset(months=months)
+        x_min = max(x_min, date_global_min)
+        x_max = min(x_max, date_global_max)
+
+    # Contrôles période — radio discret + ← → à droite
+    ctl_l, ctl_r = st.columns([6, 1])
+    with ctl_l:
+        sel_period = st.radio(
+            "Période", options=list(PERIODS.keys()),
+            index=list(PERIODS.keys()).index(cur_period),
+            horizontal=True, key="evo_radio",
+            label_visibility="collapsed",
+        )
+        if sel_period != cur_period:
+            st.session_state["evo_period"] = sel_period
+            st.session_state["evo_offset"] = 0
+            st.rerun()
+    with ctl_r:
+        nav_l, nav_r = st.columns(2)
+        can_prev = cur_period != "Tout" and x_min > date_global_min
+        can_next = cur_period != "Tout" and cur_offset > 0
+        with nav_l:
+            if st.button("←", key="evo_prev", disabled=not can_prev,
+                         use_container_width=True):
+                st.session_state["evo_offset"] += 1
+                st.rerun()
+        with nav_r:
+            if st.button("→", key="evo_next", disabled=not can_next,
+                         use_container_width=True):
+                st.session_state["evo_offset"] -= 1
+                st.rerun()
+
+    # Min/max sur la fenêtre visible
+    fd_vis = fd_sorted[
+        (fd_sorted["PICKUP_DATE"] >= x_min) &
+        (fd_sorted["PICKUP_DATE"] <= x_max)
+    ]
+    ann_max = ann_min = None
+    if not fd_vis.empty:
+        idx_max = fd_vis[metric_choice].idxmax()
+        idx_min = fd_vis[metric_choice].idxmin()
+        ann_max = dict(
+            x=fd_vis.loc[idx_max, "PICKUP_DATE"], y=fd_vis.loc[idx_max, metric_choice],
+            text=f"▲ {fd_vis.loc[idx_max, 'PICKUP_DATE'].strftime('%-d %b %Y')}",
+            showarrow=True, arrowhead=2, arrowcolor="#059669",
+            font=dict(size=10, color="#059669"),
+            bgcolor="white", bordercolor="#059669", borderwidth=1, ax=0, ay=-36,
+        )
+        ann_min = dict(
+            x=fd_vis.loc[idx_min, "PICKUP_DATE"], y=fd_vis.loc[idx_min, metric_choice],
+            text=f"▼ {fd_vis.loc[idx_min, 'PICKUP_DATE'].strftime('%-d %b %Y')}",
+            showarrow=True, arrowhead=2, arrowcolor="#DC2626",
+            font=dict(size=10, color="#DC2626"),
+            bgcolor="white", bordercolor="#DC2626", borderwidth=1, ax=0, ay=36,
+        )
+
+    fig_line = go.Figure()
+    fig_line.add_trace(go.Scatter(
+        x=fd_sorted["PICKUP_DATE"], y=fd_sorted[metric_choice],
+        mode="lines", line=dict(color="#10B981", width=1), name="Quotidien",
+        hovertemplate="%{x|%d %b %Y}<br>" + metric_label + " : %{y:,.1f}<extra></extra>",
+    ))
+    fig_line.add_trace(go.Scatter(
+        x=fd_sorted["PICKUP_DATE"], y=fd_sorted["MA7"],
+        mode="lines", line=dict(color="#2563EB", width=2.5), name="Moy. 7 jours",
+        hovertemplate="%{x|%d %b %Y}<br>Moy. 7j : %{y:,.1f}<extra></extra>",
+    ))
+    if ann_max:
+        fig_line.add_annotation(**ann_max)
+    if ann_min:
+        fig_line.add_annotation(**ann_min)
+    def bar_rank(data, title, color_scale, height):
+        data = data.copy()
+        data["date_fr"] = data["PICKUP_DATE"].dt.strftime("%-d %b %Y")
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=data[metric_choice], y=data["date_fr"], orientation="h",
+            marker=dict(color=data[metric_choice],
+                        colorscale=color_scale, showscale=False),
+            hovertemplate="<b>%{y}</b><br>" + metric_label + " : %{x:,.1f}<extra></extra>",
+        ))
+        fig.update_layout(
+            title=title, template="plotly_white", height=height,
+            xaxis_title="", yaxis_title="",
+            margin=dict(l=0, t=36, b=4, r=8),
+            font=dict(size=10),
+        )
+        return fig
+
+    top10 = fd.nlargest(10, metric_choice).sort_values(metric_choice)
+    bot10 = fd.nsmallest(10, metric_choice).sort_values(metric_choice, ascending=False)
+
+    evo_col, rank_col = st.columns(2)
+
+    with evo_col:
+        fig_line.update_layout(
+            title=f"{metric_label} — évolution quotidienne",
+            template="plotly_white", height=420,
+            yaxis_title=metric_label, xaxis_title="",
+            xaxis=dict(range=[x_min, x_max], autorange=False),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(t=40, b=10),
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+
+    with rank_col:
+        r1, r2 = st.columns(2)
+        with r1:
+            st.plotly_chart(bar_rank(top10, "10 meilleurs jours",
+                                     [[0, "#BBF7D0"], [1, "#059669"]], 420),
+                            use_container_width=True)
+        with r2:
+            st.plotly_chart(bar_rank(bot10, "10 pires jours",
+                                     [[0, "#FEE2E2"], [1, "#DC2626"]], 420),
+                            use_container_width=True)
 
     st.divider()
 
@@ -492,45 +634,25 @@ def main():
     st.header("Quartiers")
 
     zones["zone_name"] = zones["ZONE_ID"].map(ZONE_LOOKUP).fillna(zones["ZONE_ID"].astype(str))
-    top_zones = zones.head(top_n).copy()
 
-    # 10 barres visibles, glisser verticalement dans le graphique pour voir le reste
-    VISIBLE   = 10
-    chart_h   = VISIBLE * 42 + 80
-
-    SCALE_BLUE  = [[0.0, "#93C5FD"], [1.0, "#1E40AF"]]
-    SCALE_GREEN = [[0.0, "#86EFAC"], [1.0, "#14532D"]]
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        tz_vol = top_zones.sort_values("TOTAL_TRIPS")
-        fig_zones = px.bar(
-            tz_vol, x="TOTAL_TRIPS", y="zone_name", orientation="h",
-            color="TOTAL_TRIPS", color_continuous_scale=SCALE_BLUE,
-            labels={"TOTAL_TRIPS": "Nombre de courses", "zone_name": ""},
-            title="Volume de courses par quartier", template="plotly_white",
-        )
-        fig_zones.update_coloraxes(showscale=False)
-        fig_zones.update_layout(height=chart_h, margin=dict(l=0))
-        st.plotly_chart(fig_zones, use_container_width=True)
-
-    with col2:
-        tz_fare = top_zones.sort_values("AVG_FARE")
-        fig_fare = px.bar(
-            tz_fare, x="AVG_FARE", y="zone_name", orientation="h",
-            color="AVG_FARE", color_continuous_scale=SCALE_GREEN,
-            labels={"AVG_FARE": "Tarif moyen ($)", "zone_name": ""},
-            title="Tarif moyen par quartier", template="plotly_white",
-        )
-        fig_fare.update_coloraxes(showscale=False)
-        fig_fare.update_layout(height=chart_h, margin=dict(l=0))
-        st.plotly_chart(fig_fare, use_container_width=True)
-
-    st.caption(
-        "Le tarif moyen par quartier révèle la nature des trajets : "
-        "les aéroports (JFK, LaGuardia) affichent des tarifs élevés liés à la distance, "
-        "tandis que Midtown génère du volume sur des courses courtes."
+    fig_tree = px.treemap(
+        zones,
+        path=[px.Constant("NYC"), "zone_name"],
+        values="TOTAL_TRIPS",
+        color="AVG_FARE",
+        color_continuous_scale=[[0.0, "#DBEAFE"], [0.5, "#3B82F6"], [1.0, "#1E3A8A"]],
+        template="plotly_white",
+    )
+    fig_tree.update_traces(
+        root_color="white",
+        hovertemplate="<b>%{label}</b><br>Courses : %{value:,.0f}<extra></extra>",
+    )
+    fig_tree.update_layout(height=500, margin=dict(t=10, l=0, r=0, b=0))
+    fig_tree.update_coloraxes(colorbar=dict(title="Tarif moy. ($)", thickness=12, len=0.6))
+    st.plotly_chart(fig_tree, use_container_width=True)
+    st.markdown(
+        "**100 zones affichées sur ~260 zones TLC NYC · "
+        "surface = volume de courses · couleur = tarif moyen (bleu foncé = plus cher)**"
     )
 
     st.divider()
