@@ -186,7 +186,7 @@ def query(sql):
     cur = conn.cursor()
     cur.execute(sql)
     cols = [d[0] for d in cur.description]
-    return pd.DataFrame(cur.fetchall(), columns=cols)
+    return pd.DataFrame(cur.fetchall(), columns=cols)  # type: ignore
 
 # Correction du bug de chargement Parquet : microsecondes interprétées comme secondes
 _TS = ("DATEADD('second',"
@@ -201,7 +201,6 @@ _DATE_FILTER = (
 @st.cache_data(ttl=3600)
 def load_data():
     pickup_date = _TS.format(col="TPEP_PICKUP_DATETIME")
-    dropoff_ts  = _TS.format(col="TPEP_DROPOFF_DATETIME")
     pickup_hour = f"HOUR({pickup_date})"
 
     daily = query(f"""
@@ -296,9 +295,9 @@ def main():
             # Filtre défensif : on coupe à fin oct. 2025 même si le cache est ancien
             daily = daily[daily["PICKUP_DATE"] <= pd.Timestamp("2025-10-31")]
             # Exclure les jours avec données incomplètes (< 30 % de la médiane)
-            _med = daily["TOTAL_TRIPS"].median()
+            _med = daily["TOTAL_TRIPS"].median()  # type: ignore
             daily = daily[daily["TOTAL_TRIPS"] >= _med * 0.30]
-            if daily.empty:
+            if daily.empty:  # type: ignore
                 st.warning("Aucune donnée valide dans daily_summary.")
                 st.stop()
         except Exception as e:
@@ -316,7 +315,6 @@ def main():
         f"Source : NYC Taxi & Limousine Commission (TLC)"
     )
 
-    top_n = 10
     fd    = daily
 
     # Composant carte réutilisé dans les KPIs et le portrait
@@ -384,12 +382,12 @@ def main():
 
     with col1:
         fd_copy = fd.copy()
-        fd_copy["jour_semaine"] = fd_copy["PICKUP_DATE"].dt.day_name()
+        fd_copy["jour_semaine"] = fd_copy["PICKUP_DATE"].dt.day_name()  # type: ignore
         day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         day_fr    = ["Lun.", "Mar.", "Mer.", "Jeu.", "Ven.", "Sam.", "Dim."]
 
         weekly = (
-            fd_copy.groupby("jour_semaine")[metric_choice]
+            fd_copy.groupby("jour_semaine")[metric_choice]  # type: ignore
             .mean()
             .reindex(day_order)
             .reset_index()
@@ -490,7 +488,7 @@ def main():
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
     # -- Évolution pleine largeur ------------------------------------------
-    fd_sorted = fd.sort_values("PICKUP_DATE").copy()
+    fd_sorted = fd.sort_values("PICKUP_DATE").copy()  # type: ignore
     fd_sorted["MA7"] = fd_sorted[metric_choice].rolling(7, center=True, min_periods=1).mean()
 
     date_global_min = fd_sorted["PICKUP_DATE"].min()
@@ -549,8 +547,8 @@ def main():
     ]
     ann_max = ann_min = None
     if not fd_vis.empty:
-        idx_max = fd_vis[metric_choice].idxmax()
-        idx_min = fd_vis[metric_choice].idxmin()
+        idx_max = fd_vis[metric_choice].idxmax()  # type: ignore
+        idx_min = fd_vis[metric_choice].idxmin()  # type: ignore
         ann_max = dict(
             x=fd_vis.loc[idx_max, "PICKUP_DATE"], y=fd_vis.loc[idx_max, metric_choice],
             text=f"▲ {fd_vis.loc[idx_max, 'PICKUP_DATE'].strftime('%-d %b %Y')}",
@@ -599,8 +597,8 @@ def main():
         )
         return fig
 
-    top10 = fd.nlargest(10, metric_choice).sort_values(metric_choice)
-    bot10 = fd.nsmallest(10, metric_choice).sort_values(metric_choice, ascending=False)
+    top10 = fd.nlargest(10, metric_choice).sort_values(metric_choice)  # type: ignore
+    bot10 = fd.nsmallest(10, metric_choice).sort_values(metric_choice, ascending=False)  # type: ignore
 
     evo_col, rank_col = st.columns(2)
 
@@ -633,7 +631,7 @@ def main():
     # ------------------------------------------------------------------
     st.header("Quartiers")
 
-    zones["zone_name"] = zones["ZONE_ID"].map(ZONE_LOOKUP).fillna(zones["ZONE_ID"].astype(str))
+    zones["zone_name"] = zones["ZONE_ID"].map(ZONE_LOOKUP).fillna(zones["ZONE_ID"].astype(str))  # type: ignore
 
     fig_tree = px.treemap(
         zones,

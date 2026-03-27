@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 load_dotenv()
 
@@ -35,17 +34,17 @@ def main():
     # 1. Graphique qualité des données
     logger.info("📈 Graphique qualité des données...")
     
-    cursor.execute("SELECT COUNT(*) FROM RAW.yellow_taxi_trips")
-    total_raw = cursor.fetchone()[0]
-    
     cursor.execute("SELECT COUNT(*) FROM STAGING.clean_trips")
-    total_clean = cursor.fetchone()[0]
+    row_clean = cursor.fetchone()
+    total_clean = row_clean[0] if row_clean else 0
     
     cursor.execute("SELECT COUNT(*) FROM RAW.yellow_taxi_trips WHERE passenger_count IS NULL OR ratecodeid IS NULL OR store_and_fwd_flag IS NULL OR congestion_surcharge IS NULL OR airport_fee IS NULL")
-    null_count = cursor.fetchone()[0]
+    row_null = cursor.fetchone()
+    null_count = row_null[0] if row_null else 0
     
     cursor.execute("SELECT COUNT(*) FROM RAW.yellow_taxi_trips WHERE fare_amount < 0 OR total_amount < 0")
-    negative_count = cursor.fetchone()[0]
+    row_neg = cursor.fetchone()
+    negative_count = row_neg[0] if row_neg else 0
     
     # Graphique en camembert
     plt.figure(figsize=(10, 6))

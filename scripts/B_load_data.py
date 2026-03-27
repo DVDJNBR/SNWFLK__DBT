@@ -83,7 +83,8 @@ def main():
     
     # Compter le total final
     cursor.execute("SELECT COUNT(*) FROM yellow_taxi_trips")
-    total_count = cursor.fetchone()[0]
+    row_count = cursor.fetchone()
+    total_count = row_count[0] if row_count else 0
     
     logger.success(f"✅ Chargement terminé: {successful}/{len(all_months)} mois - {total_count:,} lignes totales")
     conn.close()

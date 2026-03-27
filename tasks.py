@@ -3,14 +3,13 @@ Tasks Invoke pour le projet NYC Taxi Pipeline
 Automatise l'exécution des scripts Snowflake et DBT
 """
 
-from invoke import task
+from invoke.tasks import task
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import print as rprint
 
 # Charger les variables d'environnement
 load_dotenv()
