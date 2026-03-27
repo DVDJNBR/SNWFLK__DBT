@@ -1,12 +1,11 @@
 # NYC Taxi Pipeline
 
-Mode d'emploi pour reproduire le brief NYC Taxi en local avec **DuckDB** et **Streamlit**. 
-(L'architecture avec Snowflake et dbt est préservée dans l'historique mais n'est pas requise pour lancer cette version optimisée locale).
+Mode d'emploi pour reproduire le brief NYC Taxi avec Snowflake et dbt.
 
 ## Prérequis
 
 - Python 3.11+
-- uv (gestionnaire de packages)
+- Compte Snowflake (essai gratuit)
 - Git
 
 ## Installation
@@ -17,53 +16,151 @@ cd nyc_taxi_pipeline
 uv sync
 ```
 
-## Étapes du projet
+## Configuration
 
-### 1. Téléchargement des Données
+Créer le fichier `.env` avec vos credentials Snowflake :
+
+```env
+SNOWFLAKE_ACCOUNT=your_account
+SNOWFLAKE_USER=your_username  
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_ROLE_PASSWORD=your_role_password
+```
+
+## Étapes du Brief
+
+### 1. Configuration Snowflake (Étape 1.1)
+
+```bash
+inv test-connection
+```
+
+Crée l'infrastructure :
+- Warehouse `NYC_TAXI_WH`
+- Database `NYC_TAXI_DB` 
+- Schémas `RAW`, `STAGING`, `FINAL`
+- Rôle `NYCTRANSFORM`
+
+### 2. Chargement des Données (Étape 1.2)
 
 ```bash
 inv load-data
 ```
-Ou bien `python scripts/B_load_data.py`
 
-*Cette commande télécharge les données des trajets de taxi de New York (2024-2025) sous forme de fichiers Parquet dans le dossier `data/yellow_taxi/`. Ces fichiers compressés et partitionnés sont idéaux pour de l'analyse locale performante.*
+Charge les données 2024-2025 :
+- Télécharge les fichiers Parquet depuis NYC Open Data
+- Upload vers Snowflake RAW.yellow_taxi_trips
+- ~77M lignes chargées
 
-### 2. Dashboard Interactif (Streamlit & DuckDB)
+### 3. Analyse et Nettoyage (Étape 1.3)
 
-L'application Streamlit utilise **DuckDB** pour interroger les fichiers Parquet locaux à la volée avec des performances proches d'un entrepôt de données cloud.
+```bash
+inv data-analysis
+```
+
+Analyse la qualité des données :
+- Détecte les valeurs manquantes (16.24%)
+- Identifie les montants négatifs (3.67%)
+- Génère le rapport `reports/raw_data_quality_report.md`
+
+### 4. Transformations (Étape 1.4)
+
+```bash
+inv transformations
+```
+
+Crée les tables STAGING et FINAL :
+- `STAGING.clean_trips` : Données nettoyées
+- `FINAL.daily_summary` : Résumés quotidiens
+- `FINAL.zone_analysis` : Analyse par zone
+- `FINAL.hourly_patterns` : Patterns horaires
+
+### 5. Option Avancée : dbt Core
+
+```bash
+inv dbt-transformations
+```
+
+Utilise dbt pour les transformations :
+- Modèles dans `nyc_taxi_pipeline/models/`
+- Tests de qualité automatiques
+- Documentation auto-générée
+
+## Analyses et Rapports
+
+### Générer les graphiques
+
+```bash
+inv generate-report
+```
+
+Crée les visualisations matplotlib dans `reports/`.
+
+### Dashboard interactif
 
 ```bash
 inv dashboard
 ```
-*Lance Streamlit sur http://localhost:8501*
 
-## Captures d'écran du Dashboard
+Lance Streamlit sur http://localhost:8501
 
-![Vue générale des KPIs](reports/placeholder_kpi.png)
+### Analyse des données RAW
 
-![Répartition Horaires / Géographie](reports/placeholder_geo.png)
-
-*(Insérer ci-dessus les captures définitives avant présentation)*
-
-## Composants Additionnels (Optionnels)
-
-### Architecture dbt & Snowflake
-
-Dans le cadre du MVP précédent, une architecture 3 couches (RAW -> STAGING -> FINAL) a été construite dans **Snowflake** et gérée par **dbt**.
-- Consulter le dossier `SQL/` pour les requêtes initiales.
-- Consulter le dossier `nyc_taxi_pipeline/` pour le projet dbt complet (tests qualitatifs, modèles STAGING/MARTS).
-
-### Scripts Analytiques & Matplotlib
-
-Vous pouvez générer des rapports complémentaires :
 ```bash
-inv data-analysis
-inv generate-report
+inv raw-analysis  
 ```
-*Ces scripts sauvegardent des notes de qualité de la donnée et des graphiques statiques dans le dossier `reports/`.*
+
+Lance Jupyter avec l'analyse de qualité.
+
+## Pipeline Complet
+
+Pour exécuter toutes les étapes d'un coup :
+
+```bash
+inv full-pipeline
+```
 
 ## Résultats
 
-- **Millions de lignes** de données NYC Taxi traitables localement via Parquet
-- **Dashboard Streamlit** interactif et responsif
-- **Exécution ultra-rapide** grâce à DuckDB éliminant le besoin d'infrastructure cloud coûteuse
+- **77M lignes** de données NYC Taxi (2024-2025)
+- **Architecture 3 couches** RAW → STAGING → FINAL
+- **5 tables analytiques** dans FINAL
+- **Dashboard Streamlit** interactif
+- **Tests dbt** automatiques
+
+## Structure
+
+```
+scripts/
+├── A_snowflake_config.py    # Étape 1.1 : Infrastructure
+├── B_load_data.py           # Étape 1.2 : Chargement données
+├── B_load_local_parquet.py  # Alternative : DL Parquet strict (sans Snowflake)
+├── C_data_analysis.py       # Étape 1.3 : Analyse qualité
+├── D_transformations.py     # Étape 1.4 : Transformations
+├── E_generate_report.py     # Graphiques matplotlib
+└── F_dbt_transformations.py # Option dbt Core
+
+SQL/
+├── Snowflake/              # Requêtes infrastructure
+└── dbt/                    # Modèles dbt
+
+nyc_taxi_pipeline/          # Projet dbt Core
+reports/                    # Analyses et graphiques
+streamlit_dashboard.py      # Dashboard web connecté à Snowflake
+streamlit_dashboard_local.py# Dashboard web connecté à DuckDB (fichiers locaux)
+tasks.py                    # Commandes Invoke
+```
+
+---
+
+## ⚡ Alternative In-Memory (VPS / Sans Snowflake)
+
+Dans le cas où le compte gratuit Snowflake a expiré ou pour faire tourner le Dashboard sur un VPS restreint en ressources, deux scripts alternatifs "locaux" sont fournis :
+
+1. **Obtention des données :**
+   Exécutez `python scripts/B_load_local_parquet.py`. Les fichiers Parquets seront téléchargés en mode pur et stockés dans `/data/yellow_taxi/`.
+   
+2. **Dashboard Local (DuckDB) :**
+   Exécutez `streamlit run streamlit_dashboard_local.py`. Cette application lit directement le dossier `/data/yellow_taxi/*.parquet` ultra-rapidement sans nécessiter de base distante.
+
+*Veillez à supprimer ou ignorer les gros fichiers `.parquet` si vous poussez sur Github.*
