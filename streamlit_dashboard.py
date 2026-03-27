@@ -6,17 +6,13 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import snowflake.connector
-from dotenv import load_dotenv
-import os
+import duckdb
 
 st.set_page_config(
     page_title="NYC Yellow Taxi",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Palette jour/nuit : 5 ancres  bleu nuit → bleu moyen → bleu ciel → bleu moyen → bleu nuit
@@ -166,53 +162,41 @@ ZONE_LOOKUP = {
 }
 
 # ---------------------------------------------------------------------------
-# Connexion Snowflake
+# Connexion DuckDB (Fichiers Parquet locaux)
 # ---------------------------------------------------------------------------
 @st.cache_resource
 def get_connection():
-    return snowflake.connector.connect(
-        account=os.getenv("SNOWFLAKE_ACCOUNT"),
-        user=os.getenv("SNOWFLAKE_USER"),
-        password=os.getenv("SNOWFLAKE_PASSWORD"),
-        warehouse="NYC_TAXI_WH",
-        database="NYC_TAXI_DB",
-        schema="DBT_DBREAU",
-        role="ACCOUNTADMIN"
-    )
+    return duckdb.connect()
 
 @st.cache_data(ttl=3600)
-def query(sql):
+def query(sql) -> pd.DataFrame:
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(sql)
-    cols = [d[0] for d in cur.description]
-    return pd.DataFrame(cur.fetchall(), columns=cols)
+    df = conn.execute(sql).fetchdf()
+    df.columns = [col.upper() for col in df.columns]
+    return df
 
-# Correction du bug de chargement Parquet : microsecondes interprétées comme secondes
-_TS = ("DATEADD('second',"
-       " DATEDIFF('second', '1970-01-01'::TIMESTAMP_NTZ, {col}) / 1000000,"
-       " '1970-01-01'::TIMESTAMP_NTZ)")
-
+_TS_PICKUP = "tpep_pickup_datetime"
 _DATE_FILTER = (
-    f"AND {_TS.format(col='TPEP_PICKUP_DATETIME')}::DATE >= '2023-01-01' "
-    f"AND {_TS.format(col='TPEP_PICKUP_DATETIME')}::DATE <  '2025-11-01'"
+    f"AND {_TS_PICKUP} >= '2023-01-01'::DATE "
+    f"AND {_TS_PICKUP} <  '2025-11-01'::DATE"
 )
+
+SOURCE_TABLE = "read_parquet('data/yellow_taxi/*.parquet')"
 
 @st.cache_data(ttl=3600)
 def load_data():
-    pickup_date = _TS.format(col="TPEP_PICKUP_DATETIME")
-    dropoff_ts  = _TS.format(col="TPEP_DROPOFF_DATETIME")
-    pickup_hour = f"HOUR({pickup_date})"
+    pickup_date = _TS_PICKUP
+    pickup_hour = f"date_part('hour', {pickup_date})"
 
     daily = query(f"""
         SELECT
-            {pickup_date}::DATE                              AS pickup_date,
+            CAST({pickup_date} AS DATE)                      AS pickup_date,
             COUNT(*)                                         AS total_trips,
             SUM(TOTAL_AMOUNT)                                AS total_revenue,
             AVG(TRIP_DISTANCE)                               AS avg_distance,
             AVG(TOTAL_AMOUNT)                                AS avg_fare,
             AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100)  AS avg_tip_pct
-        FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
+        FROM {SOURCE_TABLE}
         WHERE TRIP_DISTANCE > 0 AND TOTAL_AMOUNT > 0
           {_DATE_FILTER}
         GROUP BY 1
@@ -234,7 +218,7 @@ def load_data():
                 WHEN {pickup_hour} BETWEEN 17 AND 20 THEN 'Soir (17h-21h)'
                 ELSE                                       'Soirée (21h-0h)'
             END             AS tranche
-        FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
+        FROM {SOURCE_TABLE}
         WHERE TRIP_DISTANCE > 0
           {_DATE_FILTER}
         GROUP BY 1, 7
@@ -249,7 +233,7 @@ def load_data():
             AVG(TOTAL_AMOUNT)                        AS avg_fare,
             AVG(TRIP_DISTANCE)                       AS avg_distance,
             AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100) AS avg_tip_pct
-        FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
+        FROM {SOURCE_TABLE}
         WHERE TRIP_DISTANCE > 0
           {_DATE_FILTER}
         GROUP BY 1
@@ -274,12 +258,13 @@ def load_data():
                        OR DOLOCATIONID = 137 THEN 1 ELSE 0 END)
                 * 100.0 / COUNT(*)                                       AS pct_aeroport_lga,
             AVG(PASSENGER_COUNT)                                         AS avg_passagers
-        FROM NYC_TAXI_DB.RAW.YELLOW_TAXI_TRIPS
+        FROM {SOURCE_TABLE}
         WHERE TRIP_DISTANCE > 0 AND TOTAL_AMOUNT > 0
           {_DATE_FILTER}
     """)
 
     return daily, hourly, zones, profile
+
 
 
 # ---------------------------------------------------------------------------
@@ -296,9 +281,9 @@ def main():
             # Filtre défensif : on coupe à fin oct. 2025 même si le cache est ancien
             daily = daily[daily["PICKUP_DATE"] <= pd.Timestamp("2025-10-31")]
             # Exclure les jours avec données incomplètes (< 30 % de la médiane)
-            _med = daily["TOTAL_TRIPS"].median()
+            _med = daily["TOTAL_TRIPS"].median()  # type: ignore
             daily = daily[daily["TOTAL_TRIPS"] >= _med * 0.30]
-            if daily.empty:
+            if daily.empty:  # type: ignore
                 st.warning("Aucune donnée valide dans daily_summary.")
                 st.stop()
         except Exception as e:
@@ -316,7 +301,6 @@ def main():
         f"Source : NYC Taxi & Limousine Commission (TLC)"
     )
 
-    top_n = 10
     fd    = daily
 
     # Composant carte réutilisé dans les KPIs et le portrait
@@ -384,12 +368,12 @@ def main():
 
     with col1:
         fd_copy = fd.copy()
-        fd_copy["jour_semaine"] = fd_copy["PICKUP_DATE"].dt.day_name()
+        fd_copy["jour_semaine"] = fd_copy["PICKUP_DATE"].dt.day_name()  # type: ignore
         day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         day_fr    = ["Lun.", "Mar.", "Mer.", "Jeu.", "Ven.", "Sam.", "Dim."]
 
         weekly = (
-            fd_copy.groupby("jour_semaine")[metric_choice]
+            fd_copy.groupby("jour_semaine")[metric_choice]  # type: ignore
             .mean()
             .reindex(day_order)
             .reset_index()
@@ -490,7 +474,7 @@ def main():
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
     # -- Évolution pleine largeur ------------------------------------------
-    fd_sorted = fd.sort_values("PICKUP_DATE").copy()
+    fd_sorted = fd.sort_values("PICKUP_DATE").copy()  # type: ignore
     fd_sorted["MA7"] = fd_sorted[metric_choice].rolling(7, center=True, min_periods=1).mean()
 
     date_global_min = fd_sorted["PICKUP_DATE"].min()
@@ -549,8 +533,8 @@ def main():
     ]
     ann_max = ann_min = None
     if not fd_vis.empty:
-        idx_max = fd_vis[metric_choice].idxmax()
-        idx_min = fd_vis[metric_choice].idxmin()
+        idx_max = fd_vis[metric_choice].idxmax()  # type: ignore
+        idx_min = fd_vis[metric_choice].idxmin()  # type: ignore
         ann_max = dict(
             x=fd_vis.loc[idx_max, "PICKUP_DATE"], y=fd_vis.loc[idx_max, metric_choice],
             text=f"▲ {fd_vis.loc[idx_max, 'PICKUP_DATE'].strftime('%-d %b %Y')}",
@@ -599,8 +583,8 @@ def main():
         )
         return fig
 
-    top10 = fd.nlargest(10, metric_choice).sort_values(metric_choice)
-    bot10 = fd.nsmallest(10, metric_choice).sort_values(metric_choice, ascending=False)
+    top10 = fd.nlargest(10, metric_choice).sort_values(metric_choice)  # type: ignore
+    bot10 = fd.nsmallest(10, metric_choice).sort_values(metric_choice, ascending=False)  # type: ignore
 
     evo_col, rank_col = st.columns(2)
 
@@ -633,7 +617,7 @@ def main():
     # ------------------------------------------------------------------
     st.header("Quartiers")
 
-    zones["zone_name"] = zones["ZONE_ID"].map(ZONE_LOOKUP).fillna(zones["ZONE_ID"].astype(str))
+    zones["zone_name"] = zones["ZONE_ID"].map(ZONE_LOOKUP).fillna(zones["ZONE_ID"].astype(str))  # type: ignore
 
     fig_tree = px.treemap(
         zones,

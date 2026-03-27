@@ -1,23 +1,24 @@
 """
 Étape 1.2 : Chargement des Données (2024-2025)
-Objectif : Charger tous les mois de janvier 2024 à aujourd'hui dans RAW.yellow_taxi_trips
+Objectif : Télécharger tous les mois de janvier 2024 à aujourd'hui en local (format Parquet)
 """
 
 import httpx
-import snowflake.connector
 from pathlib import Path
 from loguru import logger
-from dotenv import load_dotenv
-import os
 
-load_dotenv()
-
-def load_month(year_month, conn):
+def load_month(year_month):
     """Charger un mois de données"""
-    cursor = conn.cursor()
     url = f"https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{year_month}.parquet"
-    local_file = Path(f"temp_{year_month.replace('-', '_')}.parquet")
+    data_dir = Path("data/yellow_taxi")
+    data_dir.mkdir(parents=True, exist_ok=True)
     
+    local_file = data_dir / f"yellow_tripdata_{year_month.replace('-', '_')}.parquet"
+    
+    if local_file.exists():
+        logger.info(f"✅ {year_month} déjà téléchargé ({local_file.stat().st_size / 1024 / 1024:.1f} MB)")
+        return True
+        
     try:
         # Télécharger
         logger.info(f"📥 Téléchargement {year_month}...")
@@ -27,21 +28,7 @@ def load_month(year_month, conn):
                 for chunk in response.iter_bytes(chunk_size=8192):
                     file.write(chunk)
         
-        # Upload vers Snowflake
-        stage_name = f"stage_{year_month.replace('-', '_')}"
-        cursor.execute(f"CREATE OR REPLACE TEMP STAGE {stage_name}")
-        cursor.execute(f"PUT file://{local_file.absolute()} @{stage_name} AUTO_COMPRESS=FALSE")
-        
-        cursor.execute(f"""
-            COPY INTO yellow_taxi_trips
-            FROM @{stage_name}
-            FILE_FORMAT = (TYPE = 'PARQUET')
-            MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
-        """)
-        
-        # Nettoyer
-        local_file.unlink()
-        logger.success(f"✅ {year_month} chargé")
+        logger.success(f"✅ {year_month} téléchargé avec succès")
         return True
         
     except Exception as e:
@@ -51,22 +38,7 @@ def load_month(year_month, conn):
         return False
 
 def main():
-    logger.info("🚀 Étape 1.2 : Chargement des données NYC Taxi 2024-2025")
-    
-    # Connexion Snowflake
-    conn = snowflake.connector.connect(
-        account=os.getenv("SNOWFLAKE_ACCOUNT"),
-        user=os.getenv("SNOWFLAKE_USER"),
-        password=os.getenv("SNOWFLAKE_PASSWORD"),
-        warehouse="NYC_TAXI_WH",
-        database="NYC_TAXI_DB",
-        schema="RAW",
-        role="NYCTRANSFORM"
-    )
-    
-    cursor = conn.cursor()
-    cursor.execute("TRUNCATE TABLE yellow_taxi_trips")
-    logger.info("🧹 Table RAW.yellow_taxi_trips vidée")
+    logger.info("🚀 Étape 1.2 : Téléchargement des données NYC Taxi 2024-2025")
     
     # Tous les mois 2024
     months_2024 = [f"2024-{i:02d}" for i in range(1, 13)]
@@ -78,15 +50,10 @@ def main():
     
     successful = 0
     for month in all_months:
-        if load_month(month, conn):
+        if load_month(month):
             successful += 1
-    
-    # Compter le total final
-    cursor.execute("SELECT COUNT(*) FROM yellow_taxi_trips")
-    total_count = cursor.fetchone()[0]
-    
-    logger.success(f"✅ Chargement terminé: {successful}/{len(all_months)} mois - {total_count:,} lignes totales")
-    conn.close()
+            
+    logger.success(f"✅ Chargement terminé: {successful}/{len(all_months)} mois prêts en local")
 
 if __name__ == "__main__":
     main()
