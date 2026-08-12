@@ -1,0 +1,20 @@
+services:
+  nyc-taxi-dashboard:
+    build: .
+    container_name: nyc-taxi-dashboard
+    restart: unless-stopped
+    ports:
+      # Bind sur localhost uniquement : c'est Caddy (déjà en place sur le VPS)
+      # qui reverse-proxy vers ce port, le conteneur n'est jamais exposé directement.
+      # 8502 côté host car 8501 est déjà pris par le conteneur qlt-eau-streamlit.
+      - "127.0.0.1:8502:8501"
+    volumes:
+      # Les Parquet vivent hors de l'image (bind mount) : persistants entre rebuilds,
+      # téléchargés une seule fois par entrypoint.sh au premier démarrage.
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 5m
+      retries: 3
