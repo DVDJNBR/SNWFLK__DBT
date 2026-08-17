@@ -467,19 +467,13 @@ def main():
         h_max   = hourly_sorted[h_col.upper()].max()
 
         fig_hourly = go.Figure()
-        for _, row in hourly_sorted.iterrows():
-            h = int(row["PICKUP_HOUR"])
-            fig_hourly.add_trace(go.Bar(
-                x=[h],
-                y=[row[h_col.upper()]],
-                marker_color=HOUR_COLORS[h],
-                showlegend=False,
-                hovertemplate=(
-                    f"<b>{h}h</b><br>"
-                    f"{metric_label} : %{{y:,.1f}}"
-                    "<extra></extra>"
-                ),
-            ))
+        fig_hourly.add_trace(go.Bar(
+            x=hourly_sorted["PICKUP_HOUR"],
+            y=hourly_sorted[h_col.upper()],
+            marker_color=[HOUR_COLORS[int(h)] for h in hourly_sorted["PICKUP_HOUR"]],
+            showlegend=False,
+            hovertemplate="<b>%{x}h</b><br>" + metric_label + " : %{y:,.1f}<extra></extra>",
+        ))
 
         for h, label in [(0, "🌙"), (12, "☀️"), (23, "🌙")]:
             fig_hourly.add_annotation(
