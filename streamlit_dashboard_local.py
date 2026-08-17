@@ -13,6 +13,8 @@ Prérequis :
 NYC Yellow Taxi — Dashboard analytique
 """
 
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -175,17 +177,6 @@ ZONE_LOOKUP = {
 # ---------------------------------------------------------------------------
 # Connexion DuckDB (Fichiers Parquet locaux)
 # ---------------------------------------------------------------------------
-@st.cache_resource
-def get_connection():
-    return duckdb.connect()
-
-@st.cache_data(ttl=3600)
-def query(sql) -> pd.DataFrame:
-    conn = get_connection()
-    df = conn.execute(sql).fetchdf()
-    df.columns = [col.upper() for col in df.columns]
-    return df
-
 _TS_PICKUP = "tpep_pickup_datetime"
 _DATE_FILTER = (
     f"AND {_TS_PICKUP} >= '2023-01-01'::DATE "
@@ -194,49 +185,95 @@ _DATE_FILTER = (
 
 SOURCE_TABLE = "read_parquet('data/yellow_taxi/*.parquet')"
 
+@st.cache_resource
+def get_connection():
+    conn = duckdb.connect()
+    # Un seul scan complet du Parquet, matérialisé en table temporaire :
+    # les 4 requêtes de load_data() agrègent ensuite dessus au lieu de
+    # relire les 1,3 Go de fichiers sources une fois par requête.
+    conn.execute(f"""
+        CREATE TEMP TABLE trips AS
+        SELECT
+            CAST({_TS_PICKUP} AS DATE)        AS pickup_date,
+            date_part('hour', {_TS_PICKUP})   AS pickup_hour,
+            TRIP_DISTANCE,
+            TOTAL_AMOUNT,
+            FARE_AMOUNT,
+            TIP_AMOUNT,
+            PULOCATIONID,
+            DOLOCATIONID,
+            PAYMENT_TYPE,
+            PASSENGER_COUNT
+        FROM {SOURCE_TABLE}
+        WHERE TRIP_DISTANCE > 0
+          {_DATE_FILTER}
+    """)
+    return conn
+
+@st.cache_data(ttl=3600)
+def query(sql) -> pd.DataFrame:
+    conn = get_connection()
+    df = conn.execute(sql).fetchdf()
+    df.columns = [col.upper() for col in df.columns]
+    return df
+
+_AGG_DIR = Path("data/aggregates")
+_AGG_NAMES = ("daily", "hourly", "zones", "profile")
+
+def _read_aggregates():
+    if not all((_AGG_DIR / f"{name}.parquet").exists() for name in _AGG_NAMES):
+        return None
+    return tuple(pd.read_parquet(_AGG_DIR / f"{name}.parquet") for name in _AGG_NAMES)
+
+def _write_aggregates(tables):
+    _AGG_DIR.mkdir(parents=True, exist_ok=True)
+    for name, df in zip(_AGG_NAMES, tables):
+        df.to_parquet(_AGG_DIR / f"{name}.parquet")
+
 @st.cache_data(ttl=3600)
 def load_data():
-    pickup_date = _TS_PICKUP
-    pickup_hour = f"date_part('hour', {pickup_date})"
+    # Agrégats déjà calculés sur disque (persistent entre redémarrages du
+    # conteneur, contrairement à st.cache_data qui ne vit qu'en RAM) : on les
+    # relit directement sans rescanner les 1,3 Go de Parquet bruts.
+    cached = _read_aggregates()
+    if cached is not None:
+        return cached
 
-    daily = query(f"""
+    daily = query("""
         SELECT
-            CAST({pickup_date} AS DATE)                      AS pickup_date,
+            pickup_date,
             COUNT(*)                                         AS total_trips,
             SUM(TOTAL_AMOUNT)                                AS total_revenue,
-            AVG(TRIP_DISTANCE)                               AS avg_distance,
-            AVG(TOTAL_AMOUNT)                                AS avg_fare,
-            AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100)  AS avg_tip_pct
-        FROM {SOURCE_TABLE}
-        WHERE TRIP_DISTANCE > 0 AND TOTAL_AMOUNT > 0
-          {_DATE_FILTER}
+            AVG(TRIP_DISTANCE)                                AS avg_distance,
+            AVG(TOTAL_AMOUNT)                                 AS avg_fare,
+            AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100)   AS avg_tip_pct
+        FROM trips
+        WHERE TOTAL_AMOUNT > 0
         GROUP BY 1
         ORDER BY 1
     """)
 
-    hourly = query(f"""
+    hourly = query("""
         SELECT
-            {pickup_hour}  AS pickup_hour,
+            pickup_hour,
             COUNT(*)          AS total_trips,
             SUM(TOTAL_AMOUNT) AS total_revenue,
             AVG(TOTAL_AMOUNT) AS avg_fare,
             AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100) AS avg_tip_pct,
             AVG(TRIP_DISTANCE) AS avg_distance,
             CASE
-                WHEN {pickup_hour} BETWEEN 0  AND 5  THEN 'Nuit (0h-6h)'
-                WHEN {pickup_hour} BETWEEN 6  AND 9  THEN 'Matin (6h-10h)'
-                WHEN {pickup_hour} BETWEEN 10 AND 16 THEN 'Journée (10h-17h)'
-                WHEN {pickup_hour} BETWEEN 17 AND 20 THEN 'Soir (17h-21h)'
-                ELSE                                       'Soirée (21h-0h)'
+                WHEN pickup_hour BETWEEN 0  AND 5  THEN 'Nuit (0h-6h)'
+                WHEN pickup_hour BETWEEN 6  AND 9  THEN 'Matin (6h-10h)'
+                WHEN pickup_hour BETWEEN 10 AND 16 THEN 'Journée (10h-17h)'
+                WHEN pickup_hour BETWEEN 17 AND 20 THEN 'Soir (17h-21h)'
+                ELSE                                     'Soirée (21h-0h)'
             END             AS tranche
-        FROM {SOURCE_TABLE}
-        WHERE TRIP_DISTANCE > 0
-          {_DATE_FILTER}
+        FROM trips
         GROUP BY 1, 7
         ORDER BY 1
     """)
 
-    zones = query(f"""
+    zones = query("""
         SELECT
             PULOCATIONID                             AS zone_id,
             COUNT(*)                                 AS total_trips,
@@ -244,15 +281,13 @@ def load_data():
             AVG(TOTAL_AMOUNT)                        AS avg_fare,
             AVG(TRIP_DISTANCE)                       AS avg_distance,
             AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100) AS avg_tip_pct
-        FROM {SOURCE_TABLE}
-        WHERE TRIP_DISTANCE > 0
-          {_DATE_FILTER}
+        FROM trips
         GROUP BY 1
         ORDER BY total_trips DESC
         LIMIT 100
     """)
 
-    profile = query(f"""
+    profile = query("""
         SELECT
             COUNT(*)                                                     AS total_trips,
             AVG(TRIP_DISTANCE)                                           AS avg_distance,
@@ -269,11 +304,11 @@ def load_data():
                        OR DOLOCATIONID = 137 THEN 1 ELSE 0 END)
                 * 100.0 / COUNT(*)                                       AS pct_aeroport_lga,
             AVG(PASSENGER_COUNT)                                         AS avg_passagers
-        FROM {SOURCE_TABLE}
-        WHERE TRIP_DISTANCE > 0 AND TOTAL_AMOUNT > 0
-          {_DATE_FILTER}
+        FROM trips
+        WHERE TOTAL_AMOUNT > 0
     """)
 
+    _write_aggregates((daily, hourly, zones, profile))
     return daily, hourly, zones, profile
 
 
@@ -432,19 +467,13 @@ def main():
         h_max   = hourly_sorted[h_col.upper()].max()
 
         fig_hourly = go.Figure()
-        for _, row in hourly_sorted.iterrows():
-            h = int(row["PICKUP_HOUR"])
-            fig_hourly.add_trace(go.Bar(
-                x=[h],
-                y=[row[h_col.upper()]],
-                marker_color=HOUR_COLORS[h],
-                showlegend=False,
-                hovertemplate=(
-                    f"<b>{h}h</b><br>"
-                    f"{metric_label} : %{{y:,.1f}}"
-                    "<extra></extra>"
-                ),
-            ))
+        fig_hourly.add_trace(go.Bar(
+            x=hourly_sorted["PICKUP_HOUR"],
+            y=hourly_sorted[h_col.upper()],
+            marker_color=[HOUR_COLORS[int(h)] for h in hourly_sorted["PICKUP_HOUR"]],
+            showlegend=False,
+            hovertemplate="<b>%{x}h</b><br>" + metric_label + " : %{y:,.1f}<extra></extra>",
+        ))
 
         for h, label in [(0, "🌙"), (12, "☀️"), (23, "🌙")]:
             fig_hourly.add_annotation(
