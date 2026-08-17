@@ -175,17 +175,6 @@ ZONE_LOOKUP = {
 # ---------------------------------------------------------------------------
 # Connexion DuckDB (Fichiers Parquet locaux)
 # ---------------------------------------------------------------------------
-@st.cache_resource
-def get_connection():
-    return duckdb.connect()
-
-@st.cache_data(ttl=3600)
-def query(sql) -> pd.DataFrame:
-    conn = get_connection()
-    df = conn.execute(sql).fetchdf()
-    df.columns = [col.upper() for col in df.columns]
-    return df
-
 _TS_PICKUP = "tpep_pickup_datetime"
 _DATE_FILTER = (
     f"AND {_TS_PICKUP} >= '2023-01-01'::DATE "
@@ -194,49 +183,75 @@ _DATE_FILTER = (
 
 SOURCE_TABLE = "read_parquet('data/yellow_taxi/*.parquet')"
 
+@st.cache_resource
+def get_connection():
+    conn = duckdb.connect()
+    # Un seul scan complet du Parquet, matérialisé en table temporaire :
+    # les 4 requêtes de load_data() agrègent ensuite dessus au lieu de
+    # relire les 1,3 Go de fichiers sources une fois par requête.
+    conn.execute(f"""
+        CREATE TEMP TABLE trips AS
+        SELECT
+            CAST({_TS_PICKUP} AS DATE)        AS pickup_date,
+            date_part('hour', {_TS_PICKUP})   AS pickup_hour,
+            TRIP_DISTANCE,
+            TOTAL_AMOUNT,
+            FARE_AMOUNT,
+            TIP_AMOUNT,
+            PULOCATIONID,
+            DOLOCATIONID,
+            PAYMENT_TYPE,
+            PASSENGER_COUNT
+        FROM {SOURCE_TABLE}
+        WHERE TRIP_DISTANCE > 0
+          {_DATE_FILTER}
+    """)
+    return conn
+
+@st.cache_data(ttl=3600)
+def query(sql) -> pd.DataFrame:
+    conn = get_connection()
+    df = conn.execute(sql).fetchdf()
+    df.columns = [col.upper() for col in df.columns]
+    return df
+
 @st.cache_data(ttl=3600)
 def load_data():
-    pickup_date = _TS_PICKUP
-    pickup_hour = f"date_part('hour', {pickup_date})"
-
-    daily = query(f"""
+    daily = query("""
         SELECT
-            CAST({pickup_date} AS DATE)                      AS pickup_date,
+            pickup_date,
             COUNT(*)                                         AS total_trips,
             SUM(TOTAL_AMOUNT)                                AS total_revenue,
-            AVG(TRIP_DISTANCE)                               AS avg_distance,
-            AVG(TOTAL_AMOUNT)                                AS avg_fare,
-            AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100)  AS avg_tip_pct
-        FROM {SOURCE_TABLE}
-        WHERE TRIP_DISTANCE > 0 AND TOTAL_AMOUNT > 0
-          {_DATE_FILTER}
+            AVG(TRIP_DISTANCE)                                AS avg_distance,
+            AVG(TOTAL_AMOUNT)                                 AS avg_fare,
+            AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100)   AS avg_tip_pct
+        FROM trips
+        WHERE TOTAL_AMOUNT > 0
         GROUP BY 1
         ORDER BY 1
     """)
 
-    hourly = query(f"""
+    hourly = query("""
         SELECT
-            {pickup_hour}  AS pickup_hour,
+            pickup_hour,
             COUNT(*)          AS total_trips,
             SUM(TOTAL_AMOUNT) AS total_revenue,
             AVG(TOTAL_AMOUNT) AS avg_fare,
             AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100) AS avg_tip_pct,
             AVG(TRIP_DISTANCE) AS avg_distance,
             CASE
-                WHEN {pickup_hour} BETWEEN 0  AND 5  THEN 'Nuit (0h-6h)'
-                WHEN {pickup_hour} BETWEEN 6  AND 9  THEN 'Matin (6h-10h)'
-                WHEN {pickup_hour} BETWEEN 10 AND 16 THEN 'Journée (10h-17h)'
-                WHEN {pickup_hour} BETWEEN 17 AND 20 THEN 'Soir (17h-21h)'
-                ELSE                                       'Soirée (21h-0h)'
+                WHEN pickup_hour BETWEEN 0  AND 5  THEN 'Nuit (0h-6h)'
+                WHEN pickup_hour BETWEEN 6  AND 9  THEN 'Matin (6h-10h)'
+                WHEN pickup_hour BETWEEN 10 AND 16 THEN 'Journée (10h-17h)'
+                WHEN pickup_hour BETWEEN 17 AND 20 THEN 'Soir (17h-21h)'
+                ELSE                                     'Soirée (21h-0h)'
             END             AS tranche
-        FROM {SOURCE_TABLE}
-        WHERE TRIP_DISTANCE > 0
-          {_DATE_FILTER}
+        FROM trips
         GROUP BY 1, 7
         ORDER BY 1
     """)
 
-    zones = query(f"""
+    zones = query("""
         SELECT
             PULOCATIONID                             AS zone_id,
             COUNT(*)                                 AS total_trips,
@@ -244,15 +259,13 @@ def load_data():
             AVG(TOTAL_AMOUNT)                        AS avg_fare,
             AVG(TRIP_DISTANCE)                       AS avg_distance,
             AVG(TIP_AMOUNT / NULLIF(FARE_AMOUNT, 0) * 100) AS avg_tip_pct
-        FROM {SOURCE_TABLE}
-        WHERE TRIP_DISTANCE > 0
-          {_DATE_FILTER}
+        FROM trips
         GROUP BY 1
         ORDER BY total_trips DESC
         LIMIT 100
     """)
 
-    profile = query(f"""
+    profile = query("""
         SELECT
             COUNT(*)                                                     AS total_trips,
             AVG(TRIP_DISTANCE)                                           AS avg_distance,
@@ -269,9 +282,8 @@ def load_data():
                        OR DOLOCATIONID = 137 THEN 1 ELSE 0 END)
                 * 100.0 / COUNT(*)                                       AS pct_aeroport_lga,
             AVG(PASSENGER_COUNT)                                         AS avg_passagers
-        FROM {SOURCE_TABLE}
-        WHERE TRIP_DISTANCE > 0 AND TOTAL_AMOUNT > 0
-          {_DATE_FILTER}
+        FROM trips
+        WHERE TOTAL_AMOUNT > 0
     """)
 
     return daily, hourly, zones, profile
