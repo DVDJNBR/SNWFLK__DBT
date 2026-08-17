@@ -13,6 +13,8 @@ Prérequis :
 NYC Yellow Taxi — Dashboard analytique
 """
 
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -215,8 +217,28 @@ def query(sql) -> pd.DataFrame:
     df.columns = [col.upper() for col in df.columns]
     return df
 
+_AGG_DIR = Path("data/aggregates")
+_AGG_NAMES = ("daily", "hourly", "zones", "profile")
+
+def _read_aggregates():
+    if not all((_AGG_DIR / f"{name}.parquet").exists() for name in _AGG_NAMES):
+        return None
+    return tuple(pd.read_parquet(_AGG_DIR / f"{name}.parquet") for name in _AGG_NAMES)
+
+def _write_aggregates(tables):
+    _AGG_DIR.mkdir(parents=True, exist_ok=True)
+    for name, df in zip(_AGG_NAMES, tables):
+        df.to_parquet(_AGG_DIR / f"{name}.parquet")
+
 @st.cache_data(ttl=3600)
 def load_data():
+    # Agrégats déjà calculés sur disque (persistent entre redémarrages du
+    # conteneur, contrairement à st.cache_data qui ne vit qu'en RAM) : on les
+    # relit directement sans rescanner les 1,3 Go de Parquet bruts.
+    cached = _read_aggregates()
+    if cached is not None:
+        return cached
+
     daily = query("""
         SELECT
             pickup_date,
@@ -286,6 +308,7 @@ def load_data():
         WHERE TOTAL_AMOUNT > 0
     """)
 
+    _write_aggregates((daily, hourly, zones, profile))
     return daily, hourly, zones, profile
 
 

@@ -6,6 +6,11 @@ if [ -z "$(ls -A /app/data/yellow_taxi/*.parquet 2>/dev/null)" ]; then
     python scripts/B_load_local_parquet.py
 fi
 
+if [ -z "$(ls -A /app/data/aggregates/*.parquet 2>/dev/null)" ]; then
+    echo "Pré-calcul des agrégats (une seule fois, ~1min)..."
+    python -c "from streamlit_dashboard_local import load_data; load_data()"
+fi
+
 exec streamlit run streamlit_dashboard_local.py \
     --server.port=8501 \
     --server.address=0.0.0.0 \
