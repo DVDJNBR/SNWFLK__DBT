@@ -3,7 +3,6 @@ NYC Yellow Taxi — Dashboard analytique
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -12,6 +11,7 @@ from dotenv import load_dotenv
 import os
 
 import nyc_theme
+import nyc_content
 import skyline
 
 st.set_page_config(
@@ -260,6 +260,19 @@ def main():
     nyc_theme.inject_css()
     st.title("🚕 NYC Yellow Taxi")
 
+    tab_about, tab_arch, tab_dash = st.tabs(["🧭 Contexte", "🏗️ Architecture", "📊 Dashboard"])
+
+    with tab_about:
+        nyc_content.render_about_tab()
+
+    with tab_arch:
+        nyc_content.render_architecture_tab()
+
+    with tab_dash:
+        render_dashboard_tab()
+
+
+def render_dashboard_tab():
     with st.spinner("Chargement des données..."):
         try:
             daily, hourly, zones, profile = load_data()
@@ -415,11 +428,11 @@ def main():
         if trough_h != peak_h:
             peak_labels[trough_h] = _fmt_metric(values_by_hour[trough_h])
 
-        png_bytes, png_size = skyline.render_skyline_png(values_by_hour, peak_labels=peak_labels)
-        components.html(
-            skyline.skyline_html(png_bytes, png_size, container_height=380),
-            height=390,
+        motif = skyline.MOTIF_BY_METRIC.get(metric_choice, "taxi")
+        png_bytes, _ = skyline.render_skyline_png(
+            values_by_hour, peak_labels=peak_labels, motif=motif
         )
+        st.image(png_bytes, use_container_width=True)
         st.caption(
             (
                 f"🌇 {metric_label} par heure — pic à {peak_h}h "

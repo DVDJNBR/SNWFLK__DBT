@@ -1,19 +1,15 @@
 """
-Skyline NYC animée — même identité visuelle que le project card
-"NYC Taxi Pipeline" du portfolio (portfolio.dvdjnbr.fr), mais générée
-à partir des VRAIES données horaires du dashboard (au lieu d'un PNG figé).
+Skyline NYC — même identité visuelle que le project card "NYC Taxi Pipeline"
+du portfolio (portfolio.dvdjnbr.fr), mais générée à partir des VRAIES
+données horaires du dashboard (au lieu d'un PNG figé).
 
-Portage du générateur original (PORTFOLIO/scripts/gen_skyline.py, PIL) :
-mêmes couleurs par heure, même logique d'immeubles à paliers, mêmes
-fenêtres allumées pseudo-aléatoires, même soleil/lune. La hauteur de
-chaque immeuble est recalculée à chaque appel à partir de la métrique
-sélectionnée dans le dashboard.
-
-Le PNG obtenu est ensuite intégré dans un petit défilement CSS infini
-(logique reprise de TaxiHourlyClock.astro) rendu via
-st.components.v1.html — pas de dépendance JS.
+Portage simplifié du générateur original (PORTFOLIO/scripts/gen_skyline.py,
+PIL) : mêmes couleurs par heure, même logique d'immeubles à paliers, mêmes
+fenêtres allumées pseudo-aléatoires. Statique (pas de ciel, pas de
+défilement) — juste la skyline + un motif au sol dont la densité suit le
+volume de l'heure, et dont l'icône change selon la métrique affichée
+(taxi / dollar / cadeau / route).
 """
-import base64
 import io
 import math
 from pathlib import Path
@@ -37,20 +33,27 @@ WINDOW_OFF = "#2a4258"
 WINDOW_LIT = "#f4c542"   # = jaune taxi, réutilisé comme accent ailleurs dans le dashboard
 STROKE     = "#55555a"
 SPIRE      = "#6b6b70"
-ROAD       = "#2a2836"
-ROAD_LINE  = "#e8dfae"
 
 SLOT_WIDTH    = 15
 HEIGHT_SCALE  = 1.8
 STRIP_WIDTH   = SLOT_WIDTH * 24
 GROUND_Y      = 108
-Y_MIN, Y_MAX  = -50, 128
+Y_MIN, Y_MAX  = -44, 128
 
 NIGHT_PROB = [
     0.75, 0.8, 0.85, 0.85, 0.75, 0.55, 0.35, 0.15,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0.15, 0.35, 0.55, 0.7,
 ]
+
+# Icône affichée au sol selon la métrique sélectionnée dans le dashboard.
+MOTIF_BY_METRIC = {
+    "TOTAL_TRIPS":   "taxi",
+    "TOTAL_REVENUE": "dollar",
+    "AVG_FARE":      "dollar",
+    "AVG_TIP_PCT":   "gift",
+    "AVG_DISTANCE":  "road",
+}
 
 
 def _hash_unit(seed: float) -> float:
@@ -109,9 +112,36 @@ def _dashed_line(draw, px, y, dash=4, gap=3, **kw):
         x += dash + gap
 
 
-def render_skyline_png(values_by_hour, scale=4, supersample=2, peak_labels=None):
+def _draw_dollar(draw, cx, cy, r, font):
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(61, 220, 132, 255),
+                 outline=(21, 61, 41, 255), width=max(1, int(r * 0.14)))
+    bbox = draw.textbbox((0, 0), "$", font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text((cx - tw / 2, cy - th / 2 - bbox[1]), "$", font=font, fill=(14, 46, 30, 255))
+
+
+def _draw_gift(draw, cx, cy, r):
+    draw.rectangle([cx - r, cy - r * 0.75, cx + r, cy + r], fill=(138, 110, 163, 255),
+                    outline=(70, 55, 85, 255), width=max(1, int(r * 0.1)))
+    rw = r * 0.32
+    draw.rectangle([cx - rw / 2, cy - r * 0.75, cx + rw / 2, cy + r], fill=WINDOW_LIT)
+    rh = r * 0.32
+    draw.rectangle([cx - r, cy - rh / 2, cx + r, cy + rh / 2], fill=WINDOW_LIT)
+
+
+def _draw_road(draw, cx, cy, w, h):
+    x0, y0, x1, y1 = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=h * 0.3, fill=(58, 56, 72, 255),
+                            outline=(30, 29, 40, 255))
+    dash_w, dash_h = w * 0.3, max(1, h * 0.16)
+    draw.rectangle([cx - dash_w / 2, cy - dash_h / 2, cx + dash_w / 2, cy + dash_h / 2],
+                    fill=(232, 223, 174, 235))
+
+
+def render_skyline_png(values_by_hour, scale=4, supersample=2, peak_labels=None, motif="taxi"):
     """values_by_hour: 24 floats indexés par heure (0..23).
     peak_labels: dict optionnel {hour: "texte"} affiché au-dessus de l'immeuble.
+    motif: "taxi" | "dollar" | "gift" | "road" — icône au sol, densité liée au rang de l'heure.
     Retourne (png_bytes, (largeur_px, hauteur_px))."""
     assert len(values_by_hour) == 24
     DRAW = scale * supersample
@@ -133,29 +163,9 @@ def render_skyline_png(values_by_hour, scale=4, supersample=2, peak_labels=None)
     try:
         font_sm = ImageFont.load_default(size=int(3.6 * DRAW))
         font_lg = ImageFont.load_default(size=int(4.4 * DRAW))
+        font_icon = ImageFont.load_default(size=int(4.8 * DRAW))
     except Exception:
-        font_sm = font_lg = ImageFont.load_default()
-
-    # -- ciel : soleil (12h) / lune (0h) ------------------------------------
-    sun_x, sun_y, sun_r = 12 * SLOT_WIDTH + SLOT_WIDTH / 2, -30, 6
-    g0, g1 = px(sun_x - sun_r * 1.8, sun_y - sun_r * 1.8), px(sun_x + sun_r * 1.8, sun_y + sun_r * 1.8)
-    draw.ellipse([*g0, *g1], fill=(244, 197, 66, 55))
-    s0, s1 = px(sun_x - sun_r, sun_y - sun_r), px(sun_x + sun_r, sun_y + sun_r)
-    draw.ellipse([*s0, *s1], fill=(244, 197, 66, 255))
-
-    moon_x, moon_y, moon_r = SLOT_WIDTH / 2, -30, 5.2
-    mg0, mg1 = px(moon_x - moon_r * 1.35, moon_y - moon_r * 1.35), px(moon_x + moon_r * 1.35, moon_y + moon_r * 1.35)
-    draw.ellipse([*mg0, *mg1], fill=(223, 228, 235, 40))
-    moon_layer = Image.new("L", (W, H), 0)
-    mdraw = ImageDraw.Draw(moon_layer)
-    m0, m1 = px(moon_x - moon_r, moon_y - moon_r), px(moon_x + moon_r, moon_y + moon_r)
-    mdraw.ellipse([*m0, *m1], fill=255)
-    bite_r = moon_r * 0.92
-    bx, by = moon_x + 2.4, moon_y - 1.0
-    b0, b1 = px(bx - bite_r, by - bite_r), px(bx + bite_r, by + bite_r)
-    mdraw.ellipse([*b0, *b1], fill=0)
-    moon_color = Image.new("RGBA", (W, H), (223, 228, 235, 255))
-    im.paste(moon_color, (0, 0), moon_layer)
+        font_sm = font_lg = font_icon = ImageFont.load_default()
 
     # -- route ---------------------------------------------------------------
     road_y0, road_y1 = GROUND_Y, GROUND_Y + 9
@@ -164,10 +174,12 @@ def render_skyline_png(values_by_hour, scale=4, supersample=2, peak_labels=None)
     _dashed_line(draw, px, GROUND_Y + 4.5, dash=5, gap=5,
                  fill=(232, 223, 174, 160), width=max(1, int(0.5 * DRAW)))
 
-    try:
-        taxi_sprite = Image.open(TAXI_SPRITE_PATH).convert("RGBA")
-    except Exception:
-        taxi_sprite = None
+    taxi_sprite = None
+    if motif == "taxi":
+        try:
+            taxi_sprite = Image.open(TAXI_SPRITE_PATH).convert("RGBA")
+        except Exception:
+            taxi_sprite = None
 
     # -- immeubles -------------------------------------------------------------
     for h in range(24):
@@ -227,88 +239,28 @@ def render_skyline_png(values_by_hour, scale=4, supersample=2, peak_labels=None)
         draw.ellipse([h0[0], h0[1], h1[0], h1[1]], fill=headColor,
                       outline=(60, 60, 64, 255), width=max(1, int(0.15 * DRAW)))
 
-        # taxi au sol — densité proportionnelle au volume de courses de l'heure
+        # icône au sol — densité proportionnelle au rang de l'heure pour la métrique affichée
         rank = rank_of[h]
-        show_taxi = (
+        show_icon = (
             rank <= 6
             or (rank <= 14 and _hash_unit(h + 0.41) < 0.55)
             or (_hash_unit(h) < 0.15)
         )
-        if show_taxi and taxi_sprite is not None:
-            tx, ty = xCenter - 6, GROUND_Y - 3.6
-            tp0 = px(tx, ty)
-            sw, sh = int(12 * DRAW), int(7 * DRAW)
-            resized = taxi_sprite.resize((sw, sh), Image.NEAREST)
-            im.alpha_composite(resized, (int(tp0[0]), int(tp0[1])))
+        if show_icon:
+            cx_px, cy_px = px(xCenter, GROUND_Y - 3.6)
+            if motif == "taxi" and taxi_sprite is not None:
+                sw, sh = int(12 * DRAW), int(7 * DRAW)
+                resized = taxi_sprite.resize((sw, sh), Image.NEAREST)
+                im.alpha_composite(resized, (int(cx_px - sw / 2), int(cy_px - sh / 2)))
+            elif motif == "dollar":
+                _draw_dollar(draw, cx_px, cy_px, 3.1 * DRAW, font_icon)
+            elif motif == "gift":
+                _draw_gift(draw, cx_px, cy_px, 3.1 * DRAW)
+            elif motif == "road":
+                _draw_road(draw, cx_px, cy_px, 5.5 * DRAW, 2.6 * DRAW)
 
     final_w, final_h = int(STRIP_WIDTH * scale), int((Y_MAX - Y_MIN) * scale)
     final = im.resize((final_w, final_h), Image.LANCZOS)
     buf = io.BytesIO()
     final.save(buf, format="PNG")
     return buf.getvalue(), (final_w, final_h)
-
-
-def skyline_html(png_bytes: bytes, img_size, container_height: int = 210) -> str:
-    """Encapsule le PNG dans un défilement horizontal infini (pur CSS),
-    avec un taxi 'héros' fixe au centre — même principe que le project card
-    du portfolio (skyline-scroll + taxi statique)."""
-    img_w, img_h = img_size
-    b64 = base64.b64encode(png_bytes).decode()
-    displayed_w = container_height * img_w / img_h
-
-    try:
-        taxi_b64 = base64.b64encode(TAXI_SPRITE_PATH.read_bytes()).decode()
-    except Exception:
-        taxi_b64 = ""
-
-    duration = round(displayed_w / 22, 1)  # vitesse constante quelle que soit la largeur
-
-    return f"""
-<div class="skyline-wrap">
-  <div class="skyline-track" style="width:{displayed_w * 2:.0f}px;
-                                     animation-duration:{duration}s;">
-    <img src="data:image/png;base64,{b64}" class="skyline-img"
-         style="left:0; width:{displayed_w:.0f}px;" />
-    <img src="data:image/png;base64,{b64}" class="skyline-img"
-         style="left:{displayed_w:.0f}px; width:{displayed_w:.0f}px;" />
-  </div>
-  <img src="data:image/png;base64,{taxi_b64}" class="hero-taxi" />
-  <div class="skyline-fade skyline-fade-l"></div>
-  <div class="skyline-fade skyline-fade-r"></div>
-</div>
-<style>
-  * {{ box-sizing: border-box; }}
-  body {{ margin: 0; background: transparent; }}
-  .skyline-wrap {{
-    position: relative; overflow: hidden; width: 100%; height: {container_height}px;
-    background: linear-gradient(180deg, #171626 0%, #14131d 70%, #100f18 100%);
-    border-radius: 12px; border: 1px solid rgba(244,197,66,0.16);
-  }}
-  .skyline-track {{
-    position: absolute; top: 0; left: 0; height: 100%;
-    animation-name: skyline-drift; animation-timing-function: linear;
-    animation-iteration-count: infinite; will-change: transform;
-  }}
-  .skyline-img {{ position: absolute; top: 0; height: 100%; }}
-  @keyframes skyline-drift {{
-    from {{ transform: translateX(0); }}
-    to   {{ transform: translateX(-{displayed_w:.0f}px); }}
-  }}
-  .hero-taxi {{
-    position: absolute; left: 50%; bottom: 10%; width: 30px; height: auto;
-    transform: translateX(-50%); image-rendering: pixelated;
-    filter: drop-shadow(0 3px 4px rgba(0,0,0,.55));
-    animation: taxi-bob 1.05s ease-in-out infinite;
-  }}
-  @keyframes taxi-bob {{
-    0%, 100% {{ transform: translateX(-50%) translateY(0); }}
-    50%      {{ transform: translateX(-50%) translateY(-2px); }}
-  }}
-  .skyline-fade {{ position: absolute; top: 0; bottom: 0; width: 34px; z-index: 2; }}
-  .skyline-fade-l {{ left: 0;  background: linear-gradient(90deg,  #14131d, transparent); }}
-  .skyline-fade-r {{ right: 0; background: linear-gradient(270deg, #14131d, transparent); }}
-  @media (prefers-reduced-motion: reduce) {{
-    .skyline-track, .hero-taxi {{ animation: none; }}
-  }}
-</style>
-"""
