@@ -16,49 +16,21 @@ NYC Yellow Taxi — Dashboard analytique
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import duckdb
 
+import nyc_theme
+import skyline
+
 st.set_page_config(
     page_title="NYC Yellow Taxi",
+    page_icon="🚕",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# ---------------------------------------------------------------------------
-# Palette jour/nuit : 5 ancres  bleu nuit → bleu moyen → bleu ciel → bleu moyen → bleu nuit
-#   nuit  = #1E3A8A  (h0, h23)
-#   moyen = #3B82F6  (h6, h18)
-#   ciel  = #7DD3FC  (h12)
-# ---------------------------------------------------------------------------
-HOUR_COLORS = [
-    "#1E3A8A",  # 0h  — nuit
-    "#23469C",  # 1h
-    "#2852AE",  # 2h
-    "#2D5EC0",  # 3h
-    "#316AD2",  # 4h
-    "#3676E4",  # 5h
-    "#3B82F6",  # 6h  — moyen
-    "#468FF7",  # 7h
-    "#519DF8",  # 8h
-    "#5CAAF9",  # 9h
-    "#67B8FA",  # 10h
-    "#72C6FB",  # 11h
-    "#7DD3FC",  # 12h — ciel
-    "#72C6FB",  # 13h
-    "#67B8FA",  # 14h
-    "#5CAAF9",  # 15h
-    "#519DF8",  # 16h
-    "#468FF7",  # 17h
-    "#3B82F6",  # 18h — moyen
-    "#3574E0",  # 19h
-    "#2F65CB",  # 20h
-    "#2957B5",  # 21h
-    "#2448A0",  # 22h
-    "#1E3A8A",  # 23h — nuit
-]
 
 # ---------------------------------------------------------------------------
 # Lookup officiel TLC : location_id -> nom de quartier
@@ -317,7 +289,8 @@ def load_data():
 # Interface
 # ---------------------------------------------------------------------------
 def main():
-    st.title("NYC Yellow Taxi")
+    nyc_theme.inject_css()
+    st.title("🚕 NYC Yellow Taxi")
 
     with st.spinner("Chargement des données..."):
         try:
@@ -348,47 +321,36 @@ def main():
     )
 
     fd    = daily
-
-    # Composant carte réutilisé dans les KPIs et le portrait
-    def card(label, value, detail="", color="#2563EB"):
-        st.markdown(
-            f"""<div style="background:#F8FAFC; border-left:4px solid {color};
-                            border-radius:8px; padding:18px 20px;">
-                  <div style="font-size:2rem; font-weight:700; color:{color}; line-height:1.1;">{value}</div>
-                  <div style="font-size:0.82rem; font-weight:600; color:#334155; margin-top:6px;">{label}</div>
-                  <div style="font-size:0.75rem; color:#94A3B8; margin-top:3px;">{detail}</div>
-                </div>""",
-            unsafe_allow_html=True,
-        )
+    card  = nyc_theme.card
 
     # ------------------------------------------------------------------
     # Section 1 : Indicateurs clés
     # ------------------------------------------------------------------
-    st.header("Indicateurs clés")
+    st.header("💰 Indicateurs clés")
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         card("Courses", f"{fd['TOTAL_TRIPS'].sum():,.0f}",
-             "sur la période sélectionnée", "#2563EB")
+             "sur la période sélectionnée", nyc_theme.TAXI_GOLD, "🚕")
     with c2:
         rev = fd["TOTAL_REVENUE"].sum()
         card("Revenus totaux", f"${rev/1e6:.1f}M",
-             f"soit ${rev/fd['TOTAL_TRIPS'].sum():.2f} / course", "#2563EB")
+             f"soit ${rev/fd['TOTAL_TRIPS'].sum():.2f} / course", nyc_theme.DOLLAR_GREEN, "💵")
     with c3:
         card("Distance moyenne", f"{fd['AVG_DISTANCE'].mean():.1f} mi",
-             "par trajet", "#059669")
+             "par trajet", nyc_theme.DUSK_ORANGE, "📍")
     with c4:
         card("Tarif moyen", f"${fd['AVG_FARE'].mean():.2f}",
-             "toutes charges incluses", "#059669")
+             "toutes charges incluses", nyc_theme.DOLLAR_GREEN, "💲")
     with c5:
         card("Pourboire moyen", f"{fd['AVG_TIP_PCT'].mean():.1f}%",
-             "du tarif de base", "#7C3AED")
+             "du tarif de base", nyc_theme.NIGHT_PURPLE, "🎁")
 
     st.divider()
 
     # ------------------------------------------------------------------
     # Section 2 : Patterns d'activité
     # ------------------------------------------------------------------
-    st.header("Patterns d'activité")
+    st.header("🌆 Patterns d'activité")
 
     METRIC_OPTIONS = ["TOTAL_TRIPS", "TOTAL_REVENUE", "AVG_FARE", "AVG_TIP_PCT", "AVG_DISTANCE"]
     METRIC_LABELS  = {
@@ -427,7 +389,7 @@ def main():
         weekly["jour_fr"] = day_fr
         mean_val = weekly[metric_choice].mean()
         weekly["color"] = weekly[metric_choice].apply(
-            lambda v: "#2563EB" if v >= mean_val else "#CBD5E1"
+            lambda v: nyc_theme.TAXI_GOLD if v >= mean_val else "#4a4760"
         )
         weekly["delta"] = ((weekly[metric_choice] - mean_val) / mean_val * 100).round(1)
 
@@ -443,16 +405,16 @@ def main():
         fig_week.add_hline(
             y=mean_val,
             line_dash="dot",
-            line_color="#94A3B8",
+            line_color=nyc_theme.TEXT_DIM,
             annotation_text="moy.",
             annotation_position="right",
             annotation_font_size=11,
         )
         y_min = weekly[metric_choice].min()
         y_max = weekly[metric_choice].max()
+        nyc_theme.style_fig(fig_week)
         fig_week.update_layout(
             title=f"{metric_label} — profil hebdomadaire",
-            template="plotly_white",
             height=380,
             showlegend=False,
             yaxis_range=[y_min * 0.96, y_max * 1.08],
@@ -462,40 +424,46 @@ def main():
         st.plotly_chart(fig_week, use_container_width=True)
 
     with col2:
-        hourly_sorted = hourly.sort_values("PICKUP_HOUR")
-        h_col   = metric_choice.lower()   # total_trips / total_revenue / avg_fare
-        h_max   = hourly_sorted[h_col.upper()].max()
-
-        fig_hourly = go.Figure()
-        fig_hourly.add_trace(go.Bar(
-            x=hourly_sorted["PICKUP_HOUR"],
-            y=hourly_sorted[h_col.upper()],
-            marker_color=[HOUR_COLORS[int(h)] for h in hourly_sorted["PICKUP_HOUR"]],
-            showlegend=False,
-            hovertemplate="<b>%{x}h</b><br>" + metric_label + " : %{y:,.1f}<extra></extra>",
-        ))
-
-        for h, label in [(0, "🌙"), (12, "☀️"), (23, "🌙")]:
-            fig_hourly.add_annotation(
-                x=h, y=h_max * 1.07,
-                text=label, showarrow=False,
-                font=dict(size=20),
-            )
-
-        fig_hourly.update_layout(
-            title=f"{metric_label} par heure",
-            xaxis=dict(title="Heure", tickmode="linear", tick0=0, dtick=1),
-            yaxis_title=metric_label,
-            template="plotly_white",
-            height=380,
-            bargap=0.08,
+        hourly_vals = (
+            hourly.set_index("PICKUP_HOUR")[metric_choice]
+            .reindex(range(24), fill_value=0)
         )
-        st.plotly_chart(fig_hourly, use_container_width=True)
+        values_by_hour = hourly_vals.tolist()
+        peak_h   = int(hourly_vals.idxmax())
+        trough_h = int(hourly_vals.idxmin())
+
+        def _fmt_metric(v):
+            if metric_choice == "TOTAL_REVENUE":
+                return f"${v/1e3:,.0f}k".replace(",", " ")
+            if metric_choice == "AVG_FARE":
+                return f"${v:,.2f}"
+            if metric_choice == "AVG_TIP_PCT":
+                return f"{v:.1f}%"
+            if metric_choice == "AVG_DISTANCE":
+                return f"{v:.1f} mi"
+            return f"{v:,.0f}".replace(",", " ")
+
+        peak_labels = {peak_h: _fmt_metric(values_by_hour[peak_h])}
+        if trough_h != peak_h:
+            peak_labels[trough_h] = _fmt_metric(values_by_hour[trough_h])
+
+        png_bytes, png_size = skyline.render_skyline_png(values_by_hour, peak_labels=peak_labels)
+        components.html(
+            skyline.skyline_html(png_bytes, png_size, container_height=380),
+            height=390,
+        )
+        st.caption(
+            (
+                f"🌇 {metric_label} par heure — pic à {peak_h}h "
+                f"({_fmt_metric(values_by_hour[peak_h])}) · creux à {trough_h}h "
+                f"({_fmt_metric(values_by_hour[trough_h])})"
+            ).replace("$", r"\$")  # évite l'interprétation LaTeX ($...$) de st.caption
+        )
 
     # Sélecteur de métrique — boutons natifs centrés entre les deux rangées
     st.markdown(
         "<p style='text-align:center; font-size:0.95rem; font-weight:600; "
-        "color:#1E40AF; margin:20px 0 8px;'>"
+        f"color:{nyc_theme.TAXI_GOLD}; margin:20px 0 8px;'>"
         "Sélectionner la métrique à afficher sur les graphiques</p>",
         unsafe_allow_html=True,
     )
@@ -593,12 +561,12 @@ def main():
     fig_line = go.Figure()
     fig_line.add_trace(go.Scatter(
         x=fd_sorted["PICKUP_DATE"], y=fd_sorted[metric_choice],
-        mode="lines", line=dict(color="#10B981", width=1), name="Quotidien",
+        mode="lines", line=dict(color="rgba(237,234,227,0.30)", width=1), name="Quotidien",
         hovertemplate="%{x|%d %b %Y}<br>" + metric_label + " : %{y:,.1f}<extra></extra>",
     ))
     fig_line.add_trace(go.Scatter(
         x=fd_sorted["PICKUP_DATE"], y=fd_sorted["MA7"],
-        mode="lines", line=dict(color="#2563EB", width=2.5), name="Moy. 7 jours",
+        mode="lines", line=dict(color=nyc_theme.TAXI_GOLD, width=2.5), name="Moy. 7 jours",
         hovertemplate="%{x|%d %b %Y}<br>Moy. 7j : %{y:,.1f}<extra></extra>",
     ))
     if ann_max:
@@ -615,11 +583,12 @@ def main():
                         colorscale=color_scale, showscale=False),
             hovertemplate="<b>%{y}</b><br>" + metric_label + " : %{x:,.1f}<extra></extra>",
         ))
+        nyc_theme.style_fig(fig)
         fig.update_layout(
-            title=title, template="plotly_white", height=height,
+            title=title, height=height,
             xaxis_title="", yaxis_title="",
             margin=dict(l=0, t=36, b=4, r=8),
-            font=dict(size=10),
+            font=dict(size=10, color=nyc_theme.TEXT_LIGHT),
         )
         return fig
 
@@ -629,9 +598,10 @@ def main():
     evo_col, rank_col = st.columns(2)
 
     with evo_col:
+        nyc_theme.style_fig(fig_line)
         fig_line.update_layout(
             title=f"{metric_label} — évolution quotidienne",
-            template="plotly_white", height=420,
+            height=420,
             yaxis_title=metric_label, xaxis_title="",
             xaxis=dict(range=[x_min, x_max], autorange=False),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -643,11 +613,11 @@ def main():
         r1, r2 = st.columns(2)
         with r1:
             st.plotly_chart(bar_rank(top10, "10 meilleurs jours",
-                                     [[0, "#BBF7D0"], [1, "#059669"]], 420),
+                                     [[0, nyc_theme.BG_PANEL_2], [1, nyc_theme.DOLLAR_GREEN]], 420),
                             use_container_width=True)
         with r2:
             st.plotly_chart(bar_rank(bot10, "10 pires jours",
-                                     [[0, "#FEE2E2"], [1, "#DC2626"]], 420),
+                                     [[0, nyc_theme.BG_PANEL_2], [1, nyc_theme.DUSK_RED]], 420),
                             use_container_width=True)
 
     st.divider()
@@ -655,7 +625,7 @@ def main():
     # ------------------------------------------------------------------
     # Section 4 : Géographie
     # ------------------------------------------------------------------
-    st.header("Quartiers")
+    st.header("🗺️ Quartiers")
 
     zones["zone_name"] = zones["ZONE_ID"].map(ZONE_LOOKUP).fillna(zones["ZONE_ID"].astype(str))  # type: ignore
 
@@ -664,19 +634,20 @@ def main():
         path=[px.Constant("NYC"), "zone_name"],
         values="TOTAL_TRIPS",
         color="AVG_FARE",
-        color_continuous_scale=[[0.0, "#DBEAFE"], [0.5, "#3B82F6"], [1.0, "#1E3A8A"]],
-        template="plotly_white",
+        color_continuous_scale=[[0.0, "#3a3650"], [0.5, "#9f948a"], [1.0, nyc_theme.TAXI_GOLD]],
+        template="plotly_dark",
     )
     fig_tree.update_traces(
-        root_color="white",
+        root_color=nyc_theme.BG_PAGE,
         hovertemplate="<b>%{label}</b><br>Courses : %{value:,.0f}<extra></extra>",
     )
+    nyc_theme.style_fig(fig_tree)
     fig_tree.update_layout(height=500, margin=dict(t=10, l=0, r=0, b=0))
     fig_tree.update_coloraxes(colorbar=dict(title="Tarif moy. ($)", thickness=12, len=0.6))
     st.plotly_chart(fig_tree, use_container_width=True)
     st.markdown(
         "**100 zones affichées sur ~260 zones TLC NYC · "
-        "surface = volume de courses · couleur = tarif moyen (bleu foncé = plus cher)**"
+        "surface = volume de courses · couleur = tarif moyen (doré = plus cher)**"
     )
 
     st.divider()
@@ -684,40 +655,40 @@ def main():
     # ------------------------------------------------------------------
     # Section 5 : Portrait type d'un trajet NYC
     # ------------------------------------------------------------------
-    st.header("Portrait type d'un trajet à New York")
+    st.header("🚖 Portrait type d'un trajet à New York")
 
     p = profile.iloc[0]
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         card("Distance moyenne", f"{p['AVG_DISTANCE']:.1f} mi",
-             "par course", "#2563EB")
+             "par course", nyc_theme.TAXI_GOLD, "📏")
     with c2:
         card("Tarif moyen", f"${p['AVG_FARE']:.2f}",
-             "toutes charges incluses", "#2563EB")
+             "toutes charges incluses", nyc_theme.DOLLAR_GREEN, "💲")
     with c3:
         card("Courses avec pourboire", f"{p['PCT_AVEC_POURBOIRE']:.0f}%",
-             f"pourboire moy. {p['AVG_TIP_PCT']:.1f}% du tarif", "#059669")
+             f"pourboire moy. {p['AVG_TIP_PCT']:.1f}% du tarif", nyc_theme.DOLLAR_GREEN, "🎁")
     with c4:
         card("Paiement par carte", f"{p['PCT_CARTE']:.0f}%",
-             f"{100 - p['PCT_CARTE']:.0f}% en espèces", "#059669")
+             f"{100 - p['PCT_CARTE']:.0f}% en espèces", nyc_theme.DOLLAR_GREEN, "💳")
 
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         card("Passagers / course", f"{p['AVG_PASSAGERS']:.1f}",
-             "en moyenne", "#7C3AED")
+             "en moyenne", nyc_theme.NIGHT_PURPLE, "👥")
     with c2:
         card("Courses via JFK", f"{p['PCT_AEROPORT_JFK']:.1f}%",
-             "départ ou arrivée", "#7C3AED")
+             "départ ou arrivée", nyc_theme.NIGHT_PURPLE, "✈️")
     with c3:
         card("Courses via LaGuardia", f"{p['PCT_AEROPORT_LGA']:.1f}%",
-             "départ ou arrivée", "#7C3AED")
+             "départ ou arrivée", nyc_theme.NIGHT_PURPLE, "✈️")
     with c4:
         pct_city = 100 - p['PCT_AEROPORT_JFK'] - p['PCT_AEROPORT_LGA']
         card("Courses intra-ville", f"{pct_city:.0f}%",
-             "sans aéroport", "#7C3AED")
+             "sans aéroport", nyc_theme.NIGHT_PURPLE, "🏙️")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -732,12 +703,12 @@ def main():
         y="Mode",
         orientation="h",
         color="Mode",
-        color_discrete_sequence=["#2563EB", "#059669", "#94A3B8"],
-        template="plotly_white",
+        color_discrete_sequence=[nyc_theme.TAXI_GOLD, nyc_theme.DOLLAR_GREEN, nyc_theme.TEXT_DIM],
         title="Répartition des modes de paiement",
         text="Part (%)",
     )
     fig_pay.update_traces(texttemplate="%{text:.0f}%", textposition="inside")
+    nyc_theme.style_fig(fig_pay)
     fig_pay.update_layout(
         height=180, showlegend=False,
         xaxis=dict(range=[0, 100], title=""),
